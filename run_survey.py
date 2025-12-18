@@ -249,10 +249,6 @@ def extract_questions(questionnaire: Dict[str, Any]) -> List[Dict[str, Any]]:
     for section_name, section_questions in questionnaire.items():
         if not isinstance(section_questions, list):
             continue
-        
-        # Skip Screener section - screener responses come from generate_audience payload
-        if section_name.lower() == "screener":
-            continue
 
         for q in section_questions:
             questions.append(
