@@ -9,6 +9,7 @@ from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_core.runnables import RunnableLambda
 
 from observability import get_logger, log_llm_usage, log_rate_limit
+from survey_memory import SurveyMemoryBuffer
 
 logger = get_logger("Respondent Simulator")
 
@@ -56,7 +57,7 @@ def _parse_int_env(name: str, default: int) -> int:
         return default
 
 
-RESPONDENT_MAX_CONCURRENCY = _parse_int_env("RESPONDENT_MAX_CONCURRENCY", default=45)
+RESPONDENT_MAX_CONCURRENCY = _parse_int_env("RESPONDENT_MAX_CONCURRENCY", default=100)
 
 
 def make_azure_llm() -> AzureChatOpenAI:
@@ -143,6 +144,62 @@ Do NOT include explanations or reasoning. Only return valid JSON.
 """.strip()
 
 
+SYSTEM_PROMPT_WITH_CONDITIONS = """
+You are an expert survey respondent simulator.
+
+Your job is to answer survey questions for a given persona while respecting:
+1. The persona's characteristics and background
+2. Instructions provided for each question
+3. Conditions that determine if a question should be answered or skipped
+4. Previous responses (provided as context)
+
+The user message will contain:
+- "persona_json": the respondent persona
+- "previous_responses": summary of all previous Q&A (including screener responses)
+- "question": the current question to answer with its instructions and conditions
+
+Question fields:
+- id, text, type, options, required
+- instructions: specific guidance for answering
+- conditions: logic that determines if this question applies based on previous answers
+
+CONDITION EVALUATION RULES:
+- Carefully read the "conditions" field and "previous_responses"
+- If conditions reference previous answers, check if they are met
+- If conditions are NOT met, the question should be SKIPPED
+- If no conditions or conditions are met, answer the question normally
+
+OUTPUT FORMAT (STRICT JSON):
+Return a single JSON object:
+
+If question should be answered:
+{
+  "id": "<question_id>",
+  "answer": <VALUE>,
+  "skipped": false
+}
+
+If question should be SKIPPED (conditions not met):
+{
+  "id": "<question_id>",
+  "answer": null,
+  "skipped": true,
+  "skip_reason": "Brief reason why condition not met"
+}
+
+Answer type rules:
+- radio: single option value (e.g., "r3")
+- checkbox: array of option values (e.g., ["r1", "r4"])
+- number: numeric value
+- text: 1-2 concise sentences
+- grid: object mapping rows to column values
+- html: empty string ""
+
+Never invent options. Stay consistent with persona and previous responses.
+Return ONLY valid JSON, no explanations.
+""".strip()
+
+
 # =========================
 # Utility
 # =========================
@@ -182,8 +239,8 @@ def extract_questions(questionnaire: Dict[str, Any]) -> List[Dict[str, Any]]:
       "type": ...,
       "options": [...],
       "required": bool,
-      "notes": [...],
-      "logic_validations": {...},
+      "instructions": [...],
+      "conditions": {...},
       "category": "<segment name>"
     }
     """
@@ -191,6 +248,10 @@ def extract_questions(questionnaire: Dict[str, Any]) -> List[Dict[str, Any]]:
 
     for section_name, section_questions in questionnaire.items():
         if not isinstance(section_questions, list):
+            continue
+        
+        # Skip Screener section - screener responses come from generate_audience payload
+        if section_name.lower() == "screener":
             continue
 
         for q in section_questions:
@@ -201,8 +262,8 @@ def extract_questions(questionnaire: Dict[str, Any]) -> List[Dict[str, Any]]:
                     "type": q.get("type"),
                     "options": q.get("options", []),
                     "required": q.get("required", False),
-                    "notes": q.get("instructions", []),
-                    "logic_validations": q.get("conditions", {}),
+                    "instructions": q.get("instructions", []),
+                    "conditions": q.get("conditions", {}),
                     "category": q.get("category", section_name),
                 }
             )
@@ -236,7 +297,8 @@ def extract_personas_from_generated_audience(data: Dict[str, Any]) -> List[Dict[
          "frustrations": [...],
          "need_state": ...,
          "occasions": ...
-      }
+      },
+      "screener_responses": [...]
     }
     """
     personas: List[Dict[str, Any]] = []
@@ -244,6 +306,7 @@ def extract_personas_from_generated_audience(data: Dict[str, Any]) -> List[Dict[
     for aud_idx, audience in enumerate(data.get("audiences", [])):
         meta = audience.get("metadata", {})
         audience_index = meta.get("audience_index", aud_idx)
+        screener_questions = meta.get("screener_questions", [])
 
         for member in audience.get("generated_audience", []):
             persona_json = {
@@ -261,6 +324,7 @@ def extract_personas_from_generated_audience(data: Dict[str, Any]) -> List[Dict[
                     "member_id": member.get("member_id"),
                     "audience_index": audience_index,
                     "persona_json": persona_json,
+                    "screener_responses": screener_questions,
                 }
             )
 
@@ -286,6 +350,114 @@ def extract_json_array(text: str) -> str:
         return ""
 
     return text[start: end + 1]
+
+
+def extract_json_object(text: str) -> str:
+    """
+    Try to extract the first top-level JSON object from the text.
+    """
+    if not text:
+        return ""
+
+    start = text.find("{")
+    end = text.rfind("}")
+
+    if start == -1 or end == -1 or end <= start:
+        return ""
+
+    return text[start: end + 1]
+
+
+def call_llm_for_single_question(
+    persona_json: Dict[str, Any],
+    question: Dict[str, Any],
+    previous_responses: str,
+) -> Dict[str, Any]:
+    """
+    Call LLM for a single question with memory context.
+    Returns a dict with id, answer, skipped, and optionally skip_reason.
+    """
+    user_payload = {
+        "persona_json": persona_json,
+        "previous_responses": previous_responses,
+        "question": question,
+    }
+    user_json_str = json.dumps(user_payload, ensure_ascii=False)
+
+    messages = [
+        SystemMessage(content=SYSTEM_PROMPT_WITH_CONDITIONS),
+        HumanMessage(content=user_json_str),
+    ]
+
+    import time
+    start = time.time()
+    ai_message = llm.invoke(messages)
+    latency = time.time() - start
+
+    # ----- Observability: usage -----
+    usage_meta = getattr(ai_message, "usage_metadata", None)
+    if isinstance(usage_meta, dict):
+        usage_for_logger = {
+            "prompt_tokens": usage_meta.get("input_tokens"),
+            "completion_tokens": usage_meta.get("output_tokens"),
+            "total_tokens": usage_meta.get("total_tokens"),
+        }
+    else:
+        usage_for_logger = usage_meta
+
+    log_llm_usage(
+        logger,
+        usage_for_logger,
+        latency_seconds=latency,
+        extra={"deployment": AZURE_OPENAI_DEPLOYMENT_5},
+    )
+
+    # ----- Observability: rate limits -----
+    headers = None
+    response_metadata = getattr(ai_message, "response_metadata", None)
+    if isinstance(response_metadata, dict):
+        headers = (
+            response_metadata.get("headers")
+            or response_metadata.get("response_headers")
+        )
+    if headers:
+        log_rate_limit(logger, headers)
+
+    # ----- Parse content -----
+    content = ai_message.content
+    if isinstance(content, list):
+        content = "".join(part for part in content if isinstance(part, str))
+
+    if content is None or not str(content).strip():
+        raise ValueError(
+            "Empty or null content returned from LLM.\n"
+            f"Raw message:\n{ai_message}"
+        )
+
+    content_str = str(content).strip()
+
+    # Try direct JSON parse first
+    try:
+        result = json.loads(content_str)
+        if isinstance(result, dict):
+            return result
+    except json.JSONDecodeError:
+        pass
+
+    # Fallback: try to extract object from the text
+    maybe_json = extract_json_object(content_str)
+    if maybe_json:
+        try:
+            result = json.loads(maybe_json)
+            if isinstance(result, dict):
+                return result
+        except json.JSONDecodeError:
+            pass
+
+    raise ValueError(
+        "LLM did not return valid JSON object.\n"
+        f"Raw content:\n{content_str}"
+    )
 
 
 def call_llm(
@@ -387,8 +559,109 @@ def call_llm(
 
 
 # =========================
-# Core: run survey for one persona
+# Core: run survey for one persona (with memory)
 # =========================
+
+def answer_questions_for_persona_with_memory(
+    member_id: str,
+    audience_index: int,
+    persona_json: Dict[str, Any],
+    questions: List[Dict[str, Any]],
+    screener_responses: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """
+    For a single audience member, run through all questions sequentially with memory.
+    Uses instructions and conditions from each question, evaluating against previous responses.
+
+    The final structure is:
+    {
+        "member_id": "<member_id>",
+        "audience_index": <int>,
+        "answers": [
+            {"question_id": "<id>", "value": <answer>},
+            ...
+        ]
+    }
+    """
+    memory = SurveyMemoryBuffer(screener_responses=screener_responses)
+
+    logger.info(
+        "Answering survey for member %s (audience %s) with memory | %d questions | %d screener responses",
+        member_id,
+        audience_index,
+        len(questions),
+        len(screener_responses),
+    )
+
+    for q_idx, question in enumerate(questions, start=1):
+        qid = question.get("id", f"Q{q_idx}")
+
+        if q_idx % 10 == 0 or q_idx == 1:
+            logger.info(
+                "Member %s: processing question %d/%d [%s]",
+                member_id,
+                q_idx,
+                len(questions),
+                qid,
+            )
+
+        try:
+            previous_context = memory.get_context_string()
+            result = call_llm_for_single_question(
+                persona_json=persona_json,
+                question=question,
+                previous_responses=previous_context,
+            )
+
+            answer = result.get("answer")
+            skipped = result.get("skipped", False)
+            skip_reason = result.get("skip_reason", "")
+
+            memory.add_response(
+                question_id=qid,
+                question_text=question.get("text", ""),
+                answer=answer,
+                skipped=skipped,
+                skip_reason=skip_reason,
+            )
+
+        except Exception as e:
+            logger.warning(
+                "Member %s: failed to get answer for question %s: %s",
+                member_id,
+                qid,
+                e,
+            )
+            memory.add_response(
+                question_id=qid,
+                question_text=question.get("text", ""),
+                answer=None,
+                skipped=True,
+                skip_reason=f"Error: {str(e)}",
+            )
+
+    # Build final ordered list aligned to original questions order
+    all_responses = {r["question_id"]: r for r in memory.get_all_responses()}
+    answers_list = []
+    for q in questions:
+        qid = q.get("id")
+        resp = all_responses.get(qid, {})
+        answer_entry = {
+            "question_id": qid,
+            "value": resp.get("answer"),
+        }
+        # Include skipped info if question was skipped
+        if resp.get("skipped"):
+            answer_entry["skipped"] = True
+            answer_entry["skip_reason"] = resp.get("skip_reason", "Condition not met")
+        answers_list.append(answer_entry)
+
+    return {
+        "member_id": member_id,
+        "audience_index": audience_index,
+        "answers": answers_list,
+    }
+
 
 def answer_questions_for_persona(
     member_id: str,
@@ -399,6 +672,7 @@ def answer_questions_for_persona(
 ) -> Dict[str, Any]:
     """
     For a single audience member, run through all questions (batched) and collect answers.
+    NOTE: This is the legacy batch mode without condition evaluation.
     The final structure is:
 
     {
@@ -483,6 +757,14 @@ class PersonaInput(TypedDict):
     batch_size: int
 
 
+class PersonaInputWithMemory(TypedDict):
+    member_id: str
+    audience_index: int
+    persona_json: Dict[str, Any]
+    questions: List[Dict[str, Any]]
+    screener_responses: List[Dict[str, Any]]
+
+
 def _run_for_single_persona(persona_input: PersonaInput) -> Dict[str, Any]:
     """
     Wrapper suitable for RunnableLambda so we can use .batch(max_concurrency=...).
@@ -512,6 +794,33 @@ def _run_for_single_persona(persona_input: PersonaInput) -> Dict[str, Any]:
         }
 
 
+def _run_for_single_persona_with_memory(persona_input: PersonaInputWithMemory) -> Dict[str, Any]:
+    """
+    Wrapper for memory-based sequential processing.
+    Uses instructions and conditions from questions with previous response context.
+    """
+    try:
+        return answer_questions_for_persona_with_memory(
+            member_id=persona_input["member_id"],
+            audience_index=persona_input["audience_index"],
+            persona_json=persona_input["persona_json"],
+            questions=persona_input["questions"],
+            screener_responses=persona_input["screener_responses"],
+        )
+    except Exception as e:
+        member_id = persona_input.get("member_id", "unknown")
+        logger.error(
+            f"Failed to get answers for member {member_id}: {e}"
+        )
+        logger.exception(f"Full traceback for member {member_id} failure")
+        return {
+            "member_id": member_id,
+            "audience_index": persona_input.get("audience_index", -1),
+            "answers": [],
+            "error": str(e),
+        }
+
+
 # =========================
 # Run for all personas
 # =========================
@@ -520,16 +829,18 @@ def run_survey_for_all_members(
     questionnaire_path: str,
     project_path: str,
     batch_size: int,
+    use_memory: bool = True,
 ) -> List[Dict[str, Any]]:
     """
-    End-to-end:
+    End-to-end survey simulation.
 
-    - Load questionnaire JSON
-    - Extract questions
-    - Load project JSON (audiences + generated_audience)
-    - Extract personas (one per member)
-    - For each member, call LLM (batched) to collect answers
-    - Run personas in parallel with LangChain's Runnable.batch
+    Args:
+        questionnaire_path: Path to questionnaire JSON
+        project_path: Path to project JSON with audiences
+        batch_size: Batch size for legacy mode (ignored if use_memory=True)
+        use_memory: If True, use sequential processing with memory buffer
+                   to evaluate instructions and conditions. If False, use
+                   legacy batch mode.
 
     Returns:
         List of member-level answer dicts.
@@ -542,34 +853,59 @@ def run_survey_for_all_members(
     personas = extract_personas_from_generated_audience(project_data)
     logger.info("Loaded %d personas", len(personas))
 
-    # Prepare inputs for the runnable
-    persona_inputs: List[PersonaInput] = [
-        {
-            "member_id": p["member_id"],
-            "audience_index": p["audience_index"],
-            "persona_json": p["persona_json"],
-            "questions": questions,
-            "batch_size": batch_size,
-        }
-        for p in personas
-    ]
-
-    persona_runnable = RunnableLambda(_run_for_single_persona)
-
-    logger.info(
-        "Running survey for all members via Runnable.batch | max_concurrency=%d | batch_size=%d",
-        RESPONDENT_MAX_CONCURRENCY,
-        batch_size,
-    )
-
     import time
     start = time.time()
 
-    # Run personas in parallel; LangChain will use a ThreadPoolExecutor under the hood
-    results: List[Dict[str, Any]] = persona_runnable.batch(
-        persona_inputs,
-        config={"max_concurrency": RESPONDENT_MAX_CONCURRENCY},
-    )
+    if use_memory:
+        # Memory-based sequential processing with condition evaluation
+        logger.info(
+            "Running survey with MEMORY mode | %d personas | evaluating instructions & conditions",
+            len(personas),
+        )
+
+        persona_inputs: List[PersonaInputWithMemory] = [
+            {
+                "member_id": p["member_id"],
+                "audience_index": p["audience_index"],
+                "persona_json": p["persona_json"],
+                "questions": questions,
+                "screener_responses": p.get("screener_responses", []),
+            }
+            for p in personas
+        ]
+
+        persona_runnable = RunnableLambda(_run_for_single_persona_with_memory)
+
+        results: List[Dict[str, Any]] = persona_runnable.batch(
+            persona_inputs,
+            config={"max_concurrency": RESPONDENT_MAX_CONCURRENCY},
+        )
+
+    else:
+        # Legacy batch mode (no condition evaluation)
+        logger.info(
+            "Running survey with BATCH mode (legacy) | max_concurrency=%d | batch_size=%d",
+            RESPONDENT_MAX_CONCURRENCY,
+            batch_size,
+        )
+
+        persona_inputs_legacy: List[PersonaInput] = [
+            {
+                "member_id": p["member_id"],
+                "audience_index": p["audience_index"],
+                "persona_json": p["persona_json"],
+                "questions": questions,
+                "batch_size": batch_size,
+            }
+            for p in personas
+        ]
+
+        persona_runnable = RunnableLambda(_run_for_single_persona)
+
+        results: List[Dict[str, Any]] = persona_runnable.batch(
+            persona_inputs_legacy,
+            config={"max_concurrency": RESPONDENT_MAX_CONCURRENCY},
+        )
 
     elapsed = time.time() - start
     logger.info(
