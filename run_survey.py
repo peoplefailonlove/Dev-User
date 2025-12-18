@@ -828,19 +828,13 @@ def _run_for_single_persona_with_memory(persona_input: PersonaInputWithMemory) -
 def run_survey_for_all_members(
     questionnaire_path: str,
     project_path: str,
-    batch_size: int,
-    use_memory: bool = True,
 ) -> List[Dict[str, Any]]:
     """
-    End-to-end survey simulation.
+    End-to-end survey simulation using sequential processing with memory.
 
     Args:
         questionnaire_path: Path to questionnaire JSON
         project_path: Path to project JSON with audiences
-        batch_size: Batch size for legacy mode (ignored if use_memory=True)
-        use_memory: If True, use sequential processing with memory buffer
-                   to evaluate instructions and conditions. If False, use
-                   legacy batch mode.
 
     Returns:
         List of member-level answer dicts.
@@ -856,56 +850,29 @@ def run_survey_for_all_members(
     import time
     start = time.time()
 
-    if use_memory:
-        # Memory-based sequential processing with condition evaluation
-        logger.info(
-            "Running survey with MEMORY mode | %d personas | evaluating instructions & conditions",
-            len(personas),
-        )
+    # Sequential processing with memory buffer for condition evaluation
+    logger.info(
+        "Running survey with sequential mode | %d personas | evaluating instructions & conditions",
+        len(personas),
+    )
 
-        persona_inputs: List[PersonaInputWithMemory] = [
-            {
-                "member_id": p["member_id"],
-                "audience_index": p["audience_index"],
-                "persona_json": p["persona_json"],
-                "questions": questions,
-                "screener_responses": p.get("screener_responses", []),
-            }
-            for p in personas
-        ]
+    persona_inputs: List[PersonaInputWithMemory] = [
+        {
+            "member_id": p["member_id"],
+            "audience_index": p["audience_index"],
+            "persona_json": p["persona_json"],
+            "questions": questions,
+            "screener_responses": p.get("screener_responses", []),
+        }
+        for p in personas
+    ]
 
-        persona_runnable = RunnableLambda(_run_for_single_persona_with_memory)
+    persona_runnable = RunnableLambda(_run_for_single_persona_with_memory)
 
-        results: List[Dict[str, Any]] = persona_runnable.batch(
-            persona_inputs,
-            config={"max_concurrency": RESPONDENT_MAX_CONCURRENCY},
-        )
-
-    else:
-        # Legacy batch mode (no condition evaluation)
-        logger.info(
-            "Running survey with BATCH mode (legacy) | max_concurrency=%d | batch_size=%d",
-            RESPONDENT_MAX_CONCURRENCY,
-            batch_size,
-        )
-
-        persona_inputs_legacy: List[PersonaInput] = [
-            {
-                "member_id": p["member_id"],
-                "audience_index": p["audience_index"],
-                "persona_json": p["persona_json"],
-                "questions": questions,
-                "batch_size": batch_size,
-            }
-            for p in personas
-        ]
-
-        persona_runnable = RunnableLambda(_run_for_single_persona)
-
-        results: List[Dict[str, Any]] = persona_runnable.batch(
-            persona_inputs_legacy,
-            config={"max_concurrency": RESPONDENT_MAX_CONCURRENCY},
-        )
+    results: List[Dict[str, Any]] = persona_runnable.batch(
+        persona_inputs,
+        config={"max_concurrency": RESPONDENT_MAX_CONCURRENCY},
+    )
 
     elapsed = time.time() - start
     logger.info(

@@ -490,7 +490,6 @@ def _run_simulate_survey_internal(
             results = run_survey_for_all_members(
                 questionnaire_path=questionnaire_local,
                 project_path=audience_local,
-                batch_size=30,
             )
         except Exception as survey_err:
             # Vaibhav changed: Log the error but check if we can still proceed
