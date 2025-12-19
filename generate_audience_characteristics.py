@@ -138,12 +138,32 @@ def create_generation_prompt(member: dict[str, Any]) -> str:
     else:
         screener_section = "No screener responses available."
 
-    # Build company details section
+    # Build company details section (only if provided)
     company_section = ""
     if company_details_str:
-        company_section = f"""\n## Company Details
+        company_section = f"""
+## Company Details
 {company_details_str}
 """
+
+    # Build guidelines based on whether company details are provided
+    if company_details_str:
+        context_phrase = " and company context"
+        guidelines = """## Important Guidelines
+1. Use the screener responses to inform lifestyle, work environment, and behavioral descriptions
+2. Ensure the generated profile is consistent with the screener answers
+3. Consider the company context (industry, size, region, etc.) when generating the profile
+4. The profile should feel like a real person, not a stereotype
+5. Maintain the spirit of the base persona while adapting to the screener and company context
+6. Generate a RANDOM, UNIQUE full name—avoid common names like "Ritvik", "Priya", "Sharma", "Nair". Be creative and diverse"""
+    else:
+        context_phrase = ""
+        guidelines = """## Important Guidelines
+1. Use the screener responses to inform lifestyle, work environment, and behavioral descriptions
+2. Ensure the generated profile is consistent with the screener answers
+3. The profile should feel like a real person, not a stereotype
+4. Maintain the spirit of the base persona while adapting to the screener context
+5. Generate a RANDOM, UNIQUE full name—avoid common names like "Ritvik", "Priya", "Sharma", "Nair". Be creative and diverse"""
 
     prompt = f"""Generate a detailed audience member profile for the following persona:
 
@@ -157,15 +177,9 @@ def create_generation_prompt(member: dict[str, Any]) -> str:
 ## Screener Responses
 {screener_section}
 
-Above information is enough to understand persona's traits and behavior. Use the screener responses and company context to create variations and generate a complete, realistic audience member profile as JSON.
+Above information is enough to understand persona's traits and behavior. Use the screener responses{context_phrase} to create variations and generate a complete, realistic audience member profile as JSON.
 
-## Important Guidelines
-1. Use the screener responses to inform lifestyle, work environment, and behavioral descriptions
-2. Ensure the generated profile is consistent with the screener answers
-3. Consider the company context (industry, size, region, etc.) when generating the profile
-4. The profile should feel like a real person, not a stereotype
-5. Maintain the spirit of the base persona while adapting to the screener and company context
-6. Generate a RANDOM, UNIQUE full name—avoid common names like "Ritvik", "Priya", "Sharma", "Nair". Be creative and diverse
+{guidelines}
 
 Generate a complete, realistic audience member profile as JSON."""
 
