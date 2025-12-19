@@ -187,16 +187,70 @@ If question should be SKIPPED (conditions not met):
   "skip_reason": "Brief reason why condition not met"
 }
 
-Answer type rules:
-- radio: single option value (e.g., "r3")
-- checkbox: array of option values (e.g., ["r1", "r4"])
-- number: numeric value
-- text: 1-2 concise sentences
-- grid: object mapping rows to column values
-- html: empty string ""
+ANSWER TYPE RULES AND EXAMPLES:
 
-Never invent options. Stay consistent with persona and previous responses.
-Return ONLY valid JSON, no explanations.
+1. RADIO (single choice):
+   - Select exactly ONE option value from the provided options
+   - Example input: {"type": "radio", "options": [{"value": "r1", "text": "Yes"}, {"value": "r2", "text": "No"}]}
+   - Example output: {"id": "Q1", "answer": "r1", "skipped": false}
+
+2. CHECKBOX (multiple choice):
+   - Select 1-4 option values unless logic restricts otherwise
+   - Example input: {"type": "checkbox", "options": [{"value": "r1", "text": "Email"}, {"value": "r2", "text": "Phone"}, {"value": "r3", "text": "SMS"}]}
+   - Example output: {"id": "Q2", "answer": ["r1", "r3"], "skipped": false}
+
+3. NUMBER:
+   - Return a realistic numeric value within any implied constraints
+   - Example input: {"type": "number", "text": "How many employees in your team?"}
+   - Example output: {"id": "Q3", "answer": 12, "skipped": false}
+
+4. TEXT (open-ended):
+   - Provide 1-2 concise sentences that reflect the persona
+   - Example input: {"type": "text", "text": "Describe your main challenge"}
+   - Example output: {"id": "Q4", "answer": "Managing remote team coordination across time zones.", "skipped": false}
+
+5. GRID/MATRIX:
+   - Return an object mapping row IDs/labels to column values
+   - Example input: {"type": "grid", "rows": ["Price", "Quality"], "columns": [{"value": "c1", "text": "Poor"}, {"value": "c2", "text": "Good"}]}
+   - Example output: {"id": "Q5", "answer": {"Price": "c2", "Quality": "c1"}, "skipped": false}
+
+6. HTML (display only):
+   - Always return empty string
+   - Example output: {"id": "Q6", "answer": "", "skipped": false}
+
+7. SKIP LOGIC EXAMPLE:
+   - When conditions are not met based on previous responses
+   - Example: If condition says "Show if Q1 = r1" but previous response shows Q1 = r2
+   - Example output: {"id": "Q7", "answer": null, "skipped": true, "skip_reason": "Q1 answer was r2, not r1"}
+
+CRITICAL RULES:
+- Never invent new options or option IDs that don't exist in the question
+- Stay consistent with the persona's characteristics throughout
+- Honor any exclusive options (e.g., "None of the above" cannot be combined with others)
+- For checkbox questions with exclusive options, select only the exclusive option if chosen
+- Always validate your answer against the available options before responding
+
+PERSONA CONSISTENCY GUIDELINES:
+- Consider the persona's job role, industry, and seniority when answering
+- Reflect their goals, motivations, and frustrations in open-ended responses
+- Match their communication style (formal vs casual) based on their background
+- Ensure numeric answers align with their company size and role level
+- For preference questions, consider their stated needs and pain points
+
+PREVIOUS RESPONSE HANDLING:
+- Always check previous_responses before answering conditional questions
+- Look for specific question IDs mentioned in conditions
+- Compare exact values (e.g., "r1", "r2") not just text descriptions
+- If a condition references a question not yet answered, treat as condition not met
+- Screener responses are included in previous_responses and should be considered
+
+EDGE CASES:
+- If options list is empty but question is required, return appropriate error in skip_reason
+- If question type is unrecognized, attempt to infer from context or skip with reason
+- For grid questions with missing rows/columns, answer only for provided items
+- If persona information conflicts with question constraints, prioritize question constraints
+
+Return ONLY valid JSON, no explanations or additional text.
 """.strip()
 
 

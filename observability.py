@@ -71,7 +71,7 @@ def log_llm_usage(
     extra: Optional[Dict[str, Any]] = None,
 ) -> None:
     """
-    Log LLM usage metrics (tokens, latency).
+    Log LLM usage metrics (tokens, latency, cache hits).
     `usage` may be an object (resp.usage) or a dict.
     """
 
@@ -79,11 +79,23 @@ def log_llm_usage(
     completion_tokens = _safe_get(usage, "completion_tokens")
     total_tokens = _safe_get(usage, "total_tokens")
 
+    # Extract cached_tokens from prompt_tokens_details (Azure OpenAI prompt caching)
+    cached_tokens = 0
+    prompt_tokens_details = _safe_get(usage, "prompt_tokens_details")
+    if isinstance(prompt_tokens_details, dict):
+        cached_tokens = prompt_tokens_details.get("cached_tokens", 0) or 0
+
+    # Calculate cache hit percentage
+    cache_pct = (cached_tokens / prompt_tokens * 100) if prompt_tokens else 0.0
+
     msg = (
-        "[LLM] Usage: prompt_tokens=%s, completion_tokens=%s, "
-        "total_tokens=%s, latency=%.2fs"
+        "[LLM] Usage: prompt_tokens=%s, cached_tokens=%s (%.1f%%), "
+        "completion_tokens=%s, total_tokens=%s, latency=%.2fs"
     )
-    logger.info(msg, prompt_tokens, completion_tokens, total_tokens, latency_seconds)
+    logger.info(
+        msg, prompt_tokens, cached_tokens, cache_pct,
+        completion_tokens, total_tokens, latency_seconds
+    )
 
     if extra:
         # Log any extra context as a separate line (e.g., model, file, etc.)
