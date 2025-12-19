@@ -21,17 +21,17 @@ load_dotenv()
 
 AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY")
 AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
-AZURE_OPENAI_DEPLOYMENT_5 = os.getenv("AZURE_OPENAI_DEPLOYMENT_5", "gpt-5")
-AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2024-12-01-preview")
+AZURE_OPENAI_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-5-mini")
+AZURE_OPENAI_API_VERSION = os.getenv("OPENAI_API_VERSION", "2024-12-01-preview")
 
-if not AZURE_OPENAI_API_KEY or not AZURE_OPENAI_ENDPOINT or not AZURE_OPENAI_DEPLOYMENT_5:
+if not AZURE_OPENAI_API_KEY or not AZURE_OPENAI_ENDPOINT or not AZURE_OPENAI_DEPLOYMENT:
     logger.error(
         "Missing Azure OpenAI config. Please set AZURE_OPENAI_API_KEY, "
-        "AZURE_OPENAI_ENDPOINT, and AZURE_OPENAI_DEPLOYMENT_5 in your environment or .env file."
+        "AZURE_OPENAI_ENDPOINT, and AZURE_OPENAI_DEPLOYMENT in your environment or .env file."
     )
     raise RuntimeError(
         "Missing Azure OpenAI config. Please set AZURE_OPENAI_API_KEY, "
-        "AZURE_OPENAI_ENDPOINT, and AZURE_OPENAI_DEPLOYMENT_5 in your environment or .env file."
+        "AZURE_OPENAI_ENDPOINT, and AZURE_OPENAI_DEPLOYMENT in your environment or .env file."
     )
 
 # Allow client timeout to be tuned without code changes
@@ -70,14 +70,14 @@ def make_azure_llm() -> AzureChatOpenAI:
     logger.info(
         "Initializing AzureChatOpenAI (endpoint=%s, deployment=%s, api_version=%s, timeout=%.1fs)",
         AZURE_OPENAI_ENDPOINT,
-        AZURE_OPENAI_DEPLOYMENT_5,
+        AZURE_OPENAI_DEPLOYMENT,
         AZURE_OPENAI_API_VERSION,
         RESPONDENT_LLM_TIMEOUT,
     )
 
     llm = AzureChatOpenAI(
         azure_endpoint=AZURE_OPENAI_ENDPOINT,
-        azure_deployment=AZURE_OPENAI_DEPLOYMENT_5,
+        azure_deployment=AZURE_OPENAI_DEPLOYMENT,
         openai_api_key=AZURE_OPENAI_API_KEY,
         openai_api_version=AZURE_OPENAI_API_VERSION,
         include_response_headers=True,  # so we can log rate-limit headers

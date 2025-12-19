@@ -198,17 +198,15 @@ def _create_azure_client() -> tuple[AzureChatOpenAI, str]:
     """
     api_key = os.getenv("AZURE_OPENAI_API_KEY")
     endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
-    deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT") or os.getenv(
-        "AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4o"
-    )
-    api_version = os.getenv("OPENAI_API_VERSION", "2024-08-01-preview")
+    deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-5-mini")
+    api_version = os.getenv("OPENAI_API_VERSION", "2024-12-01-preview")
 
     if not api_key or not endpoint:
         raise ValueError(
             "Azure OpenAI not configured. Set the following environment variables:\n"
             "  - AZURE_OPENAI_API_KEY\n"
             "  - AZURE_OPENAI_ENDPOINT\n"
-            "  - AZURE_OPENAI_DEPLOYMENT_NAME (optional, defaults to gpt-4o)\n"
+            "  - AZURE_OPENAI_DEPLOYMENT (optional, defaults to gpt-5-mini)\n"
             "  - OPENAI_API_VERSION (optional)"
         )
 
@@ -225,7 +223,7 @@ def _create_azure_client() -> tuple[AzureChatOpenAI, str]:
         api_version=api_version,
         azure_endpoint=endpoint,
         azure_deployment=deployment,
-        temperature=0.8,
+        # NOTE: no temperature - gpt-5-mini only supports default temperature=1
         max_tokens=4096,
         model_kwargs={"response_format": {"type": "json_object"}},
         include_response_headers=True,  # observability: rate-limit headers
