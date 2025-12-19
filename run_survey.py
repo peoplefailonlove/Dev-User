@@ -153,10 +153,9 @@ Your job is to answer survey questions for a given persona while respecting:
 3. Conditions that determine if a question should be answered or skipped
 4. Previous responses (provided as context)
 
-The user message will contain:
-- "persona_json": the respondent persona
-- "previous_responses": summary of all previous Q&A (including screener responses)
-- "question": the current question to answer with its instructions and conditions
+The user messages will contain:
+1. First message: "persona_json" - the respondent persona
+2. Second message: "previous_responses" and "question" - context and current question to answer
 
 Question fields:
 - id, text, type, options, required
@@ -249,6 +248,41 @@ EDGE CASES:
 - If question type is unrecognized, attempt to infer from context or skip with reason
 - For grid questions with missing rows/columns, answer only for provided items
 - If persona information conflicts with question constraints, prioritize question constraints
+
+ADVANCED CONDITION LOGIC:
+- AND conditions: All referenced conditions must be true (e.g., "Q1=r1 AND Q2=r2")
+- OR conditions: At least one condition must be true (e.g., "Q1=r1 OR Q1=r3")
+- NOT conditions: The referenced condition must be false (e.g., "NOT Q1=r1")
+- CONTAINS conditions: For checkbox answers, check if the value is in the array
+- Range conditions: For numeric answers, check if value falls within range (e.g., "Q3 >= 5 AND Q3 <= 10")
+
+INDUSTRY-SPECIFIC CONSIDERATIONS:
+- Technology sector: Consider adoption rates, digital maturity, innovation focus
+- Healthcare sector: Consider compliance requirements, patient safety, regulatory constraints
+- Financial services: Consider risk tolerance, regulatory compliance, security requirements
+- Manufacturing: Consider supply chain, operational efficiency, quality control
+- Retail: Consider customer experience, omnichannel strategies, inventory management
+- Professional services: Consider billable hours, client relationships, expertise areas
+
+ROLE-BASED RESPONSE PATTERNS:
+- C-level executives: Strategic focus, ROI-driven, time-constrained responses
+- Directors/VPs: Balance of strategy and operations, team management perspective
+- Managers: Operational focus, team productivity, process improvement
+- Individual contributors: Task-focused, tool preferences, daily workflow challenges
+- Consultants: Client-focused, methodology-driven, best practices orientation
+
+COMPANY SIZE CONSIDERATIONS:
+- Enterprise (1000+ employees): Complex decision-making, multiple stakeholders, formal processes
+- Mid-market (100-999 employees): Growth-focused, resource constraints, agility needs
+- Small business (10-99 employees): Owner-driven, budget-conscious, multi-role responsibilities
+- Startup (1-9 employees): Innovation-focused, rapid iteration, founder influence
+
+RESPONSE QUALITY GUIDELINES:
+- Text responses should be specific and actionable, not generic
+- Numeric responses should be realistic for the persona's context
+- Selection responses should align with persona's stated preferences and pain points
+- Grid responses should show consistent patterns that reflect persona's priorities
+- Avoid extreme responses unless persona characteristics strongly support them
 
 Return ONLY valid JSON, no explanations or additional text.
 """.strip()
@@ -426,17 +460,27 @@ def call_llm_for_single_question(
     """
     Call LLM for a single question with memory context.
     Returns a dict with id, answer, skipped, and optionally skip_reason.
+    
+    Message structure optimized for Azure OpenAI prompt caching:
+    - SystemMessage (static) -> cached across all calls
+    - HumanMessage with persona (semi-static) -> cached per persona
+    - HumanMessage with question + context (dynamic) -> not cached
     """
-    user_payload = {
-        "persona_json": persona_json,
+    # Separate persona from dynamic content for better cache hits
+    persona_str = json.dumps({"persona_json": persona_json}, ensure_ascii=False)
+    
+    dynamic_payload = {
         "previous_responses": previous_responses,
         "question": question,
     }
-    user_json_str = json.dumps(user_payload, ensure_ascii=False)
+    dynamic_str = json.dumps(dynamic_payload, ensure_ascii=False)
 
+    # Structure: static system prompt + semi-static persona + dynamic question
+    # Azure caches the longest matching prefix, so persona gets cached per-member
     messages = [
         SystemMessage(content=SYSTEM_PROMPT_WITH_CONDITIONS),
-        HumanMessage(content=user_json_str),
+        HumanMessage(content=f"PERSONA:\n{persona_str}"),
+        HumanMessage(content=f"QUESTION AND CONTEXT:\n{dynamic_str}"),
     ]
 
     import time
@@ -444,27 +488,38 @@ def call_llm_for_single_question(
     ai_message = llm.invoke(messages)
     latency = time.time() - start
 
-    # ----- Observability: usage -----
-    usage_meta = getattr(ai_message, "usage_metadata", None)
-    if isinstance(usage_meta, dict):
+    # ----- Observability: usage with cache info -----
+    response_metadata = getattr(ai_message, "response_metadata", None) or {}
+    token_usage = response_metadata.get("token_usage", {}) if isinstance(response_metadata, dict) else {}
+    
+    # Prefer response_metadata.token_usage as it contains prompt_tokens_details for caching
+    if token_usage:
         usage_for_logger = {
-            "prompt_tokens": usage_meta.get("input_tokens"),
-            "completion_tokens": usage_meta.get("output_tokens"),
-            "total_tokens": usage_meta.get("total_tokens"),
+            "prompt_tokens": token_usage.get("prompt_tokens"),
+            "completion_tokens": token_usage.get("completion_tokens"),
+            "total_tokens": token_usage.get("total_tokens"),
+            "prompt_tokens_details": token_usage.get("prompt_tokens_details"),
         }
     else:
-        usage_for_logger = usage_meta
+        usage_meta = getattr(ai_message, "usage_metadata", None)
+        if isinstance(usage_meta, dict):
+            usage_for_logger = {
+                "prompt_tokens": usage_meta.get("input_tokens"),
+                "completion_tokens": usage_meta.get("output_tokens"),
+                "total_tokens": usage_meta.get("total_tokens"),
+            }
+        else:
+            usage_for_logger = usage_meta
 
     log_llm_usage(
         logger,
         usage_for_logger,
         latency_seconds=latency,
-        extra={"deployment": AZURE_OPENAI_DEPLOYMENT_5},
+        extra={"deployment": AZURE_OPENAI_DEPLOYMENT},
     )
 
     # ----- Observability: rate limits -----
     headers = None
-    response_metadata = getattr(ai_message, "response_metadata", None)
     if isinstance(response_metadata, dict):
         headers = (
             response_metadata.get("headers")
@@ -540,27 +595,37 @@ def call_llm(
     ai_message = llm.invoke(messages)
     latency = time.time() - start
 
-    # ----- Observability: usage -----
-    usage_meta = getattr(ai_message, "usage_metadata", None)
-    if isinstance(usage_meta, dict):
+    # ----- Observability: usage with cache info -----
+    response_metadata = getattr(ai_message, "response_metadata", None) or {}
+    token_usage = response_metadata.get("token_usage", {}) if isinstance(response_metadata, dict) else {}
+    
+    if token_usage:
         usage_for_logger = {
-            "prompt_tokens": usage_meta.get("input_tokens"),
-            "completion_tokens": usage_meta.get("output_tokens"),
-            "total_tokens": usage_meta.get("total_tokens"),
+            "prompt_tokens": token_usage.get("prompt_tokens"),
+            "completion_tokens": token_usage.get("completion_tokens"),
+            "total_tokens": token_usage.get("total_tokens"),
+            "prompt_tokens_details": token_usage.get("prompt_tokens_details"),
         }
     else:
-        usage_for_logger = usage_meta
+        usage_meta = getattr(ai_message, "usage_metadata", None)
+        if isinstance(usage_meta, dict):
+            usage_for_logger = {
+                "prompt_tokens": usage_meta.get("input_tokens"),
+                "completion_tokens": usage_meta.get("output_tokens"),
+                "total_tokens": usage_meta.get("total_tokens"),
+            }
+        else:
+            usage_for_logger = usage_meta
 
     log_llm_usage(
         logger,
         usage_for_logger,
         latency_seconds=latency,
-        extra={"deployment": AZURE_OPENAI_DEPLOYMENT_5},
+        extra={"deployment": AZURE_OPENAI_DEPLOYMENT},
     )
 
     # ----- Observability: rate limits -----
     headers = None
-    response_metadata = getattr(ai_message, "response_metadata", None)
     if isinstance(response_metadata, dict):
         headers = (
             response_metadata.get("headers")

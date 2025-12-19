@@ -117,23 +117,97 @@ CRITICAL RULES:
 - For checkbox questions with exclusive options, select only the exclusive option if chosen
 - Always validate your answer against the available options before responding
 
+PERSONA CONSISTENCY GUIDELINES:
+- Consider the persona's job role, industry, and seniority when answering
+- Reflect their goals, motivations, and frustrations in open-ended responses
+- Match their communication style (formal vs casual) based on their background
+- Ensure numeric answers align with their company size and role level
+- For preference questions, consider their stated needs and pain points
+
+PREVIOUS RESPONSE HANDLING:
+- Always check previous_responses before answering conditional questions
+- Look for specific question IDs mentioned in conditions
+- Compare exact values (e.g., "r1", "r2") not just text descriptions
+- If a condition references a question not yet answered, treat as condition not met
+- Screener responses are included in previous_responses and should be considered
+
+EDGE CASES:
+- If options list is empty but question is required, return appropriate error in skip_reason
+- If question type is unrecognized, attempt to infer from context or skip with reason
+- For grid questions with missing rows/columns, answer only for provided items
+- If persona information conflicts with question constraints, prioritize question constraints
+
+ADVANCED CONDITION LOGIC:
+- AND conditions: All referenced conditions must be true (e.g., "Q1=r1 AND Q2=r2")
+- OR conditions: At least one condition must be true (e.g., "Q1=r1 OR Q1=r3")
+- NOT conditions: The referenced condition must be false (e.g., "NOT Q1=r1")
+- CONTAINS conditions: For checkbox answers, check if the value is in the array
+- Range conditions: For numeric answers, check if value falls within range (e.g., "Q3 >= 5 AND Q3 <= 10")
+
+INDUSTRY-SPECIFIC CONSIDERATIONS:
+- Technology sector: Consider adoption rates, digital maturity, innovation focus
+- Healthcare sector: Consider compliance requirements, patient safety, regulatory constraints
+- Financial services: Consider risk tolerance, regulatory compliance, security requirements
+- Manufacturing: Consider supply chain, operational efficiency, quality control
+- Retail: Consider customer experience, omnichannel strategies, inventory management
+- Professional services: Consider billable hours, client relationships, expertise areas
+
+ROLE-BASED RESPONSE PATTERNS:
+- C-level executives: Strategic focus, ROI-driven, time-constrained responses
+- Directors/VPs: Balance of strategy and operations, team management perspective
+- Managers: Operational focus, team productivity, process improvement
+- Individual contributors: Task-focused, tool preferences, daily workflow challenges
+- Consultants: Client-focused, methodology-driven, best practices orientation
+
+COMPANY SIZE CONSIDERATIONS:
+- Enterprise (1000+ employees): Complex decision-making, multiple stakeholders, formal processes
+- Mid-market (100-999 employees): Growth-focused, resource constraints, agility needs
+- Small business (10-99 employees): Owner-driven, budget-conscious, multi-role responsibilities
+- Startup (1-9 employees): Innovation-focused, rapid iteration, founder influence
+
+RESPONSE QUALITY GUIDELINES:
+- Text responses should be specific and actionable, not generic
+- Numeric responses should be realistic for the persona's context
+- Selection responses should align with persona's stated preferences and pain points
+- Grid responses should show consistent patterns that reflect persona's priorities
+- Avoid extreme responses unless persona characteristics strongly support them
+
 Return ONLY valid JSON, no explanations or additional text."""
 
-# Same user message for all calls (to maximize cache hits)
-USER_MESSAGE = """{
-  "persona_json": {"name": "Test User", "role": "Manager"},
-  "previous_responses": "",
-  "question": {"id": "Q1", "text": "What is your role?", "type": "radio", "options": [{"value": "r1", "text": "Manager"}, {"value": "r2", "text": "Developer"}]}
-}"""
+# Split messages for better cache hits:
+# - SystemMessage (static) -> cached across all calls
+# - HumanMessage with persona (semi-static) -> cached per persona  
+# - HumanMessage with question (dynamic) -> not cached
 
-messages = [
-    SystemMessage(content=SYSTEM_PROMPT),
-    HumanMessage(content=USER_MESSAGE),
+PERSONA_MESSAGE = """PERSONA:
+{"persona_json": {"name": "Test User", "role": "Manager"}}"""
+
+# Test with different questions to simulate real usage
+QUESTIONS = [
+    {"id": "Q1", "text": "What is your role?", "type": "radio", "options": [{"value": "r1", "text": "Manager"}, {"value": "r2", "text": "Developer"}]},
+    {"id": "Q2", "text": "How many years of experience?", "type": "number"},
+    {"id": "Q3", "text": "What is your main challenge?", "type": "text"},
+    {"id": "Q4", "text": "Which tools do you use?", "type": "checkbox", "options": [{"value": "r1", "text": "Excel"}, {"value": "r2", "text": "Python"}]},
+    {"id": "Q5", "text": "Rate your satisfaction", "type": "radio", "options": [{"value": "r1", "text": "Low"}, {"value": "r2", "text": "High"}]},
 ]
 
-print(f"\nMaking 5 identical calls to test caching...\n")
+import json
 
-for i in range(5):
+print(f"\nMaking 5 calls with DIFFERENT questions (same persona) to test prefix caching...\n")
+print("Expected: System prompt + persona should be cached after first call\n")
+
+for i, question in enumerate(QUESTIONS):
+    # Build messages with split structure for caching
+    dynamic_payload = {
+        "previous_responses": "",
+        "question": question,
+    }
+    messages = [
+        SystemMessage(content=SYSTEM_PROMPT),
+        HumanMessage(content=PERSONA_MESSAGE),
+        HumanMessage(content=f"QUESTION AND CONTEXT:\n{json.dumps(dynamic_payload)}"),
+    ]
+    
     start = time.time()
     response = llm.invoke(messages)
     latency = time.time() - start
@@ -151,7 +225,8 @@ for i in range(5):
     
     cache_pct = (cached_tokens / prompt_tokens * 100) if prompt_tokens else 0
     
-    print(f"Call {i+1}: prompt={prompt_tokens}, cached={cached_tokens} ({cache_pct:.1f}%), completion={completion_tokens}, latency={latency:.2f}s")
+    print(f"Q{i+1} ({question['id']}): prompt={prompt_tokens}, cached={cached_tokens} ({cache_pct:.1f}%), completion={completion_tokens}, latency={latency:.2f}s")
 
 print("\n" + "-" * 60)
 print("If caching works, calls 2-5 should show cached_tokens > 0")
+print("The cached portion = system prompt + persona message")
