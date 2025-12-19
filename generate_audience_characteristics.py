@@ -108,12 +108,20 @@ Example output:
 IMPORTANT: Return ONLY the JSON object with actual values. Do NOT return a schema definition or type descriptions."""
 
 
+def format_company_details(company_details: dict[str, Any] | None) -> str:
+    """Convert CompanyDetails dict to a formatted string."""
+    if not company_details:
+        return ""
+    return "\n".join(f"- {k}: {v}" for k, v in company_details.items() if v)
+
+
 def create_generation_prompt(member: dict[str, Any]) -> str:
     """
     Create the generation prompt for a single audience member.
     """
     persona = member.get("persona_template", {})
     screener_responses = member.get("screener_responses", [])
+    company_details_str = member.get("company_details_str", "")
 
     # Format screener Q&A
     screener_section = ""
@@ -130,6 +138,13 @@ def create_generation_prompt(member: dict[str, Any]) -> str:
     else:
         screener_section = "No screener responses available."
 
+    # Build company details section
+    company_section = ""
+    if company_details_str:
+        company_section = f"""\n## Company Details
+{company_details_str}
+"""
+
     prompt = f"""Generate a detailed audience member profile for the following persona:
 
 ## Base Persona Template
@@ -138,18 +153,19 @@ def create_generation_prompt(member: dict[str, Any]) -> str:
 - **Frustrations**: {persona.get('frustrations', 'N/A')}
 - **Need State**: {persona.get('need_state', 'N/A')}
 - **Occasions**: {persona.get('occasions', 'N/A')}
-
-Above information is enough to understand persona's traits and behavior. Use the screener responses below to create variations and generate a complete, realistic audience member profile as JSON.
-
+{company_section}
 ## Screener Responses
 {screener_section}
+
+Above information is enough to understand persona's traits and behavior. Use the screener responses and company context to create variations and generate a complete, realistic audience member profile as JSON.
 
 ## Important Guidelines
 1. Use the screener responses to inform lifestyle, work environment, and behavioral descriptions
 2. Ensure the generated profile is consistent with the screener answers
-3. The profile should feel like a real person, not a stereotype
-4. Maintain the spirit of the base persona while adapting to the screener context
-5. Generate a RANDOM, UNIQUE full name—avoid common names like "Ritvik", "Priya", "Sharma", "Nair". Be creative and diverse
+3. Consider the company context (industry, size, region, etc.) when generating the profile
+4. The profile should feel like a real person, not a stereotype
+5. Maintain the spirit of the base persona while adapting to the screener and company context
+6. Generate a RANDOM, UNIQUE full name—avoid common names like "Ritvik", "Priya", "Sharma", "Nair". Be creative and diverse
 
 Generate a complete, realistic audience member profile as JSON."""
 
@@ -356,10 +372,15 @@ def convert_persona_to_template(persona: dict[str, Any]) -> dict[str, Any]:
 
 
 def convert_audience_to_members(
-    audience_data: dict[str, Any], audience_index: int
+    audience_data: dict[str, Any], audience_index: int, company_details_str: str = ""
 ) -> list[dict[str, Any]]:
     """
     Convert audience data to member format expected by generation functions.
+    
+    Args:
+        audience_data: The audience data containing persona and screener questions
+        audience_index: Index of this audience in the list
+        company_details_str: Formatted string of company details to include in generation
     """
     persona = audience_data.get("persona", {})
     persona_template = convert_persona_to_template(persona)
@@ -373,6 +394,7 @@ def convert_audience_to_members(
             "audience_index": audience_index,
             "persona_template": persona_template,
             "screener_responses": screener_questions,
+            "company_details_str": company_details_str,
         }
         members.append(member)
 
@@ -471,12 +493,21 @@ async def generate_audience_characteristics(
     audience_data: dict[str, Any],
     audience_index: int,
     max_concurrent: int = 10,
+    company_details_str: str = "",
 ) -> dict[str, Any]:
     """
     Generate characteristics for all members in a single audience.
+    
+    Args:
+        client: Azure OpenAI client
+        deployment: Deployment name
+        audience_data: Audience data with persona and screener questions
+        audience_index: Index of this audience
+        max_concurrent: Max concurrent API calls
+        company_details_str: Formatted string of company details
     """
     start_time = time.time()
-    members = convert_audience_to_members(audience_data, audience_index)
+    members = convert_audience_to_members(audience_data, audience_index, company_details_str)
 
     print(f"\nGenerating {len(members)} members for Audience {audience_index}...")
     logger.info(
@@ -505,11 +536,19 @@ async def generate_all_parallel(
     deployment: str,
     audiences: list[dict[str, Any]],
     max_concurrent: int = 10,
+    company_details_str: str = "",
 ) -> list[dict[str, Any]]:
     """
     Generate characteristics for ALL audiences in parallel.
 
     Uses a single global semaphore to control total concurrent API calls.
+    
+    Args:
+        client: Azure OpenAI client
+        deployment: Deployment name
+        audiences: List of audience data
+        max_concurrent: Max concurrent API calls
+        company_details_str: Formatted string of company details
     """
     start_time = time.time()
 
@@ -518,7 +557,7 @@ async def generate_all_parallel(
     ranges: list[tuple[int, int, int, dict[str, Any]]] = []
 
     for idx, aud in enumerate(audiences):
-        members = convert_audience_to_members(aud, idx)
+        members = convert_audience_to_members(aud, idx, company_details_str)
         start_idx = len(all_members)
         all_members.extend(members)
         ranges.append((idx, start_idx, len(all_members), aud))
@@ -576,6 +615,12 @@ async def run_generation_async(
 
     audiences = data.get("audiences", [])
     total_samples = sum(aud.get("sampleSize", 0) for aud in audiences)
+    
+    # Extract and format company details
+    company_details = data.get("CompanyDetails", {})
+    company_details_str = format_company_details(company_details)
+    if company_details_str:
+        logger.info("Company details included in generation prompt")
 
     print(f"Loaded {len(audiences)} audiences from {input_path}")
     print(f"Total samples to generate: {total_samples}")
@@ -586,7 +631,7 @@ async def run_generation_async(
 
     if parallel_mode:
         enriched_audiences = await generate_all_parallel(
-            client, deployment, audiences, max_concurrent
+            client, deployment, audiences, max_concurrent, company_details_str
         )
     else:
         # Sequential audiences with per-audience concurrency
@@ -595,7 +640,7 @@ async def run_generation_async(
             print(f"\nGenerating members for Audience {idx} (sequential mode)...")
             logger.info("Processing audience %d sequentially", idx)
             result = await generate_audience_characteristics(
-                client, deployment, audience_data, idx, max_concurrent
+                client, deployment, audience_data, idx, max_concurrent, company_details_str
             )
             enriched_audiences.append(result)
 
