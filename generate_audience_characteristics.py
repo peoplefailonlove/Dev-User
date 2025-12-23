@@ -65,44 +65,67 @@ class GeneratedMember(BaseModel):
 # System Prompt with JSON Schema
 # ============================================================================#
 
-GENERATION_SYSTEM_PROMPT = """You are an expert persona generator creating realistic audience member profiles.
+GENERATION_SYSTEM_PROMPT = """You are an expert persona generator creating realistic, nuanced audience member profiles based on parent persona templates.
 
-Generate a realistic, believable individual that:
-- Embodies the spirit and characteristics of the base persona
-- Has internally consistent traits and behaviors
-- Feels like a real person, not a stereotype
+Your task is to generate a believable individual who:
+- **Inherits core traits** from the parent persona (behavioral patterns, motivations, frustrations, psychological states)
+- **Reflects screener responses** authentically in their lifestyle, work environment, and daily behaviors
+- **Maintains internal consistency** across all attributes—every detail should reinforce the same coherent character
+- **Feels genuinely human**—not a stereotype or caricature, but a real person with depth and nuance
+
+CRITICAL GENERATION PRINCIPLES:
+
+1. **Trait Inheritance**: The generated profile must echo the parent persona's:
+   - Core behavioral patterns and habits
+   - Underlying motivations and aspirations
+   - Key frustrations and pain points
+   - Psychological/emotional states
+   - Contextual engagement patterns
+
+2. **Screener Response Integration**: Use screener Q&A to:
+   - Ground abstract traits in concrete details
+   - Inform specific lifestyle choices, work situations, and daily routines
+   - Create realistic variations while staying true to the persona archetype
+   - Add authenticity through specific examples that align with their answers
+
+3. **Realistic Variation**: Create natural diversity by:
+   - Varying specific interests while maintaining the persona's general orientation
+   - Adjusting intensity/expression of traits based on screener context
+   - Adding unique personal touches that don't contradict core patterns
+   - Ensuring each profile feels distinct yet recognizably part of the same persona family
 
 NAME GENERATION RULES:
 - Generate a completely RANDOM and UNIQUE full name for each person
-- NEVER repeat or reuse names across profiles—each name must be distinct
-- Use diverse first names and surnames—avoid common/overused names like "Ritvik", "Priya", "Sharma", "Nair"
-- Match the name to the persona's location, ethnicity, and gender
-- Be creative: draw from a wide variety of cultural naming conventions
+- NEVER repeat or reuse names—each name must be distinct
+- Use diverse first names and surnames—avoid overused names like "Ritvik", "Priya", "Sharma", "Nair"
+- Match the name to the persona's location, ethnicity, and gender demographics
+- Draw from a wide variety of cultural naming conventions
 
+OUTPUT FORMAT:
 You MUST respond with valid JSON containing EXACTLY these fields:
-- "name": (string) A realistic full name appropriate for the persona's demographic
-- "about": (string) Behavioral description focusing on interests, digital habits, creative pursuits, and lifestyle
-- "goalsAndMotivations": (array of 3 strings) List of goals and motivations
-- "frustrations": (array of 3 strings) List of frustrations
-- "needState": (string) Current psychological or motivational state
-- "occasions": (string) Contextual situations for content engagement
+- "name": (string) A realistic full name matching demographic context
+- "about": (string) Rich behavioral description covering interests, digital habits, creative pursuits, lifestyle preferences, and work patterns—should feel like a real person's story
+- "goalsAndMotivations": (array of 3 strings) Specific, actionable goals that reflect both persona traits and screener context
+- "frustrations": (array of 3 strings) Concrete frustrations that align with persona pain points and real-world constraints
+- "needState": (string) Current psychological/motivational state that captures their mindset and emotional drivers
+- "occasions": (string) Specific contextual situations and moments when they engage with content
 
 Example output:
 {
-    "name": "Kavitha Menon",
-    "about": "A creative professional who thrives on innovation...",
+    "name": "Arjun Deshmukh",
+    "about": "A detail-oriented product manager at a mid-sized SaaS company who balances analytical thinking with creative problem-solving. Spends mornings reviewing analytics dashboards and afternoons in collaborative design sessions. Active on LinkedIn and design communities, often sharing insights about user research methodologies. Enjoys podcasts during commutes and dedicates weekends to learning new prototyping tools. Values efficiency and seeks out automation opportunities in daily workflows.",
     "goalsAndMotivations": [
-        "To scale business operations while maintaining quality",
-        "To continuously learn emerging industry trends",
-        "To create lasting impact through meaningful work"
+        "To build products that genuinely solve user problems at scale",
+        "To develop stronger data-driven decision-making skills",
+        "To mentor junior team members and build a collaborative culture"
     ],
     "frustrations": [
-        "Managing workflows with limited team resources",
-        "Maintaining quality standards under tight deadlines",
-        "Limited access to premium tools and platforms"
+        "Balancing stakeholder demands with realistic development timelines",
+        "Limited budget for user research and testing tools",
+        "Difficulty getting cross-functional alignment on product priorities"
     ],
-    "needState": "Driven and resourceful, seeking growth opportunities",
-    "occasions": "Engages with content during morning planning and evening wind-down"
+    "needState": "Ambitious yet pragmatic, seeking growth while managing constraints",
+    "occasions": "Engages with content during morning coffee while planning the day, lunch breaks for quick learning, and evening wind-down for deeper exploration"
 }
 
 IMPORTANT: Return ONLY the JSON object with actual values. Do NOT return a schema definition or type descriptions."""
@@ -149,39 +172,66 @@ def create_generation_prompt(member: dict[str, Any]) -> str:
     # Build guidelines based on whether company details are provided
     if company_details_str:
         context_phrase = " and company context"
-        guidelines = """## Important Guidelines
-1. Use the screener responses to inform lifestyle, work environment, and behavioral descriptions
-2. Ensure the generated profile is consistent with the screener answers
-3. Consider the company context (industry, size, region, etc.) when generating the profile
-4. The profile should feel like a real person, not a stereotype
-5. Maintain the spirit of the base persona while adapting to the screener and company context
-6. Generate a RANDOM, UNIQUE full name—avoid common names like "Ritvik", "Priya", "Sharma", "Nair". Be creative and diverse"""
+        guidelines = """## Quality Checklist
+✓ Profile inherits core behavioral patterns and traits from parent persona
+✓ Screener responses are authentically reflected in lifestyle and work details
+✓ Company context (industry, size, region) informs realistic work environment and challenges
+✓ All attributes are internally consistent and reinforce the same character
+✓ "About" section reads like a real person's story with specific, vivid details
+✓ Goals are concrete and actionable, not vague aspirations
+✓ Frustrations are grounded in real constraints from their context
+✓ Need state captures genuine psychological/emotional drivers
+✓ Name is RANDOM, UNIQUE, and demographically appropriate—avoid overused names
+✓ Profile feels human and authentic, not stereotypical or generic"""
     else:
         context_phrase = ""
-        guidelines = """## Important Guidelines
-1. Use the screener responses to inform lifestyle, work environment, and behavioral descriptions
-2. Ensure the generated profile is consistent with the screener answers
-3. The profile should feel like a real person, not a stereotype
-4. Maintain the spirit of the base persona while adapting to the screener context
-5. Generate a RANDOM, UNIQUE full name—avoid common names like "Ritvik", "Priya", "Sharma", "Nair". Be creative and diverse"""
+        guidelines = """## Quality Checklist
+✓ Profile inherits core behavioral patterns and traits from parent persona
+✓ Screener responses are authentically reflected in lifestyle and work details
+✓ All attributes are internally consistent and reinforce the same character
+✓ "About" section reads like a real person's story with specific, vivid details
+✓ Goals are concrete and actionable, not vague aspirations
+✓ Frustrations are grounded in real constraints from their context
+✓ Need state captures genuine psychological/emotional drivers
+✓ Name is RANDOM, UNIQUE, and demographically appropriate—avoid overused names
+✓ Profile feels human and authentic, not stereotypical or generic"""
 
-    prompt = f"""Generate a detailed audience member profile for the following persona:
+    prompt = f"""Generate a realistic audience member profile that authentically embodies the parent persona while reflecting the screener responses.
 
-## Base Persona Template
+## Parent Persona Template (Core Traits to Inherit)
 - **About**: {persona.get('about', 'N/A')}
 - **Goals & Motivations**: {persona.get('goals_and_motivations', 'N/A')}
 - **Frustrations**: {persona.get('frustrations', 'N/A')}
 - **Need State**: {persona.get('need_state', 'N/A')}
 - **Occasions**: {persona.get('occasions', 'N/A')}
 {company_section}
-## Screener Responses
+## Screener Responses (Context for Grounding)
 {screener_section}
 
-Above information is enough to understand persona's traits and behavior. Use the screener responses{context_phrase} to create variations and generate a complete, realistic audience member profile as JSON.
+## Generation Instructions
+
+Your generated profile must:
+
+1. **Inherit Core Patterns**: Maintain the parent persona's fundamental behavioral patterns, motivational drivers, frustration themes, and psychological orientation. These are the DNA of this persona—don't deviate from them.
+
+2. **Ground in Screener Context**: Use the screener responses to:
+   - Add specific, concrete details to the abstract persona traits
+   - Inform work environment, lifestyle choices, and daily routines
+   - Create authentic variations that feel real and lived-in
+   - Ensure consistency between what they say (screener) and who they are (profile)
+
+3. **Create Realistic Depth**: 
+   - Write the "about" section as a rich narrative that paints a vivid picture of a real person
+   - Make goals specific and actionable, not generic aspirations
+   - Ground frustrations in real-world constraints and situations
+   - Capture the emotional/psychological essence in the need state
+   - Describe specific moments and contexts for content engagement
+
+4. **Maintain Coherence**: Every element should reinforce the same character—their interests, habits, goals, frustrations, and behaviors should all tell one consistent story.
 
 {guidelines}
 
-Generate a complete, realistic audience member profile as JSON."""
+Generate a complete, realistic audience member profile as JSON that feels like a real person you could meet and interview."""
 
     return prompt
 
