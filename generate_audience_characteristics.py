@@ -141,10 +141,22 @@ def format_company_details(company_details: dict[str, Any] | None) -> str:
 def create_generation_prompt(member: dict[str, Any]) -> str:
     """
     Create the generation prompt for a single audience member.
+    
+    Incorporates:
+    - Parent persona template
+    - Screener responses
+    - Company details
+    - User-selected sections
+    - Quota settings (age/income mandatory when quota_enabled=True)
+    - Sample survey summary for context
     """
     persona = member.get("persona_template", {})
     screener_responses = member.get("screener_responses", [])
     company_details_str = member.get("company_details_str", "")
+    selected_sections = member.get("selected_sections", None)
+    quota_enabled = member.get("quota_enabled", False)
+    quotas = member.get("quotas", {})
+    sample_survey_summary = member.get("sample_survey_summary", "")
 
     # Format screener Q&A
     screener_section = ""
@@ -196,6 +208,47 @@ def create_generation_prompt(member: dict[str, Any]) -> str:
 ✓ Name is RANDOM, UNIQUE, and demographically appropriate—avoid overused names
 ✓ Profile feels human and authentic, not stereotypical or generic"""
 
+    # Build sections context if user selected specific sections
+    sections_section = ""
+    if selected_sections:
+        sections_section = f"""
+## Selected Sections to Focus On
+The user has selected the following sections/segments for this survey:
+- {chr(10).join('- ' + s for s in selected_sections)}
+
+Ensure the generated profile is well-suited to answer questions in these sections.
+"""
+    
+    # Build quota constraints section
+    quota_section = ""
+    if quota_enabled:
+        quota_lines = []
+        if quotas:
+            for key, value in quotas.items():
+                if value:
+                    quota_lines.append(f"- **{key}**: {value}")
+        
+        quota_section = f"""
+## Quota Constraints (MANDATORY)
+This survey has quota requirements enabled. The following demographic properties are MANDATORY and must be strictly adhered to:
+- **Age Group**: Must be explicitly defined and consistent throughout the profile
+- **Income Level**: Must be explicitly defined and consistent throughout the profile
+{chr(10).join(quota_lines) if quota_lines else ''}
+
+These quota properties must be reflected accurately in the generated profile's characteristics, behaviors, and responses.
+"""
+    
+    # Build sample survey summary section
+    sample_section = ""
+    if sample_survey_summary:
+        sample_section = f"""
+## Sample Survey Dataset Summary
+The following is a summary of the sample survey dataset for context:
+{sample_survey_summary}
+
+Use this context to ensure the generated profile aligns with the expected response patterns.
+"""
+
     prompt = f"""Generate a realistic audience member profile that authentically embodies the parent persona while reflecting the screener responses.
 
 ## Parent Persona Template (Core Traits to Inherit)
@@ -204,7 +257,7 @@ def create_generation_prompt(member: dict[str, Any]) -> str:
 - **Frustrations**: {persona.get('frustrations', 'N/A')}
 - **Need State**: {persona.get('need_state', 'N/A')}
 - **Occasions**: {persona.get('occasions', 'N/A')}
-{company_section}
+{company_section}{quota_section}{sections_section}{sample_section}
 ## Screener Responses (Context for Grounding)
 {screener_section}
 
@@ -434,7 +487,12 @@ def convert_persona_to_template(persona: dict[str, Any]) -> dict[str, Any]:
 
 
 def convert_audience_to_members(
-    audience_data: dict[str, Any], audience_index: int, company_details_str: str = ""
+    audience_data: dict[str, Any],
+    audience_index: int,
+    company_details_str: str = "",
+    selected_sections: list[str] | None = None,
+    quota_enabled: bool = False,
+    sample_survey_summary: str = "",
 ) -> list[dict[str, Any]]:
     """
     Convert audience data to member format expected by generation functions.
@@ -443,11 +501,17 @@ def convert_audience_to_members(
         audience_data: The audience data containing persona and screener questions
         audience_index: Index of this audience in the list
         company_details_str: Formatted string of company details to include in generation
+        selected_sections: List of section names user selected to answer (None = all sections)
+        quota_enabled: If True, age and income are mandatory for response generation
+        sample_survey_summary: Summarized sample survey dataset for context
     """
     persona = audience_data.get("persona", {})
     persona_template = convert_persona_to_template(persona)
     screener_questions = audience_data.get("screenerQuestions", [])
     sample_size = audience_data.get("sampleSize", 1)
+    
+    # Extract quotas (gender, age, etc.) from audience data
+    quotas = audience_data.get("quotas", {})
 
     members = []
     for idx in range(sample_size):
@@ -457,6 +521,10 @@ def convert_audience_to_members(
             "persona_template": persona_template,
             "screener_responses": screener_questions,
             "company_details_str": company_details_str,
+            "selected_sections": selected_sections,
+            "quota_enabled": quota_enabled,
+            "quotas": quotas,
+            "sample_survey_summary": sample_survey_summary,
         }
         members.append(member)
 
@@ -556,6 +624,9 @@ async def generate_audience_characteristics(
     audience_index: int,
     max_concurrent: int = 10,
     company_details_str: str = "",
+    selected_sections: list[str] | None = None,
+    quota_enabled: bool = False,
+    sample_survey_summary: str = "",
 ) -> dict[str, Any]:
     """
     Generate characteristics for all members in a single audience.
@@ -567,9 +638,19 @@ async def generate_audience_characteristics(
         audience_index: Index of this audience
         max_concurrent: Max concurrent API calls
         company_details_str: Formatted string of company details
+        selected_sections: List of section names user selected to answer
+        quota_enabled: If True, age and income are mandatory for response generation
+        sample_survey_summary: Summarized sample survey dataset for context
     """
     start_time = time.time()
-    members = convert_audience_to_members(audience_data, audience_index, company_details_str)
+    members = convert_audience_to_members(
+        audience_data,
+        audience_index,
+        company_details_str,
+        selected_sections=selected_sections,
+        quota_enabled=quota_enabled,
+        sample_survey_summary=sample_survey_summary,
+    )
 
     print(f"\nGenerating {len(members)} members for Audience {audience_index}...")
     logger.info(
@@ -599,6 +680,9 @@ async def generate_all_parallel(
     audiences: list[dict[str, Any]],
     max_concurrent: int = 10,
     company_details_str: str = "",
+    selected_sections: list[str] | None = None,
+    quota_enabled: bool = False,
+    sample_survey_summary: str = "",
 ) -> list[dict[str, Any]]:
     """
     Generate characteristics for ALL audiences in parallel.
@@ -611,6 +695,9 @@ async def generate_all_parallel(
         audiences: List of audience data
         max_concurrent: Max concurrent API calls
         company_details_str: Formatted string of company details
+        selected_sections: List of section names user selected to answer
+        quota_enabled: If True, age and income are mandatory for response generation
+        sample_survey_summary: Summarized sample survey dataset for context
     """
     start_time = time.time()
 
@@ -619,7 +706,14 @@ async def generate_all_parallel(
     ranges: list[tuple[int, int, int, dict[str, Any]]] = []
 
     for idx, aud in enumerate(audiences):
-        members = convert_audience_to_members(aud, idx, company_details_str)
+        members = convert_audience_to_members(
+            aud,
+            idx,
+            company_details_str,
+            selected_sections=selected_sections,
+            quota_enabled=quota_enabled,
+            sample_survey_summary=sample_survey_summary,
+        )
         start_idx = len(all_members)
         all_members.extend(members)
         ranges.append((idx, start_idx, len(all_members), aud))

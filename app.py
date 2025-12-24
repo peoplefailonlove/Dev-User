@@ -35,11 +35,11 @@ except Exception as e:
     )
 
 try:
-    from questionnaire_parser import extract_questions_labels
+    from questionnaire_parser import extract_questions_labels, extract_sections
 except Exception as e:
     # Fail fast with helpful message if import fails
     raise ImportError(
-        f"Failed to import extract_questions_labels from questionnaire_parser.py: {e}"
+        f"Failed to import from questionnaire_parser.py: {e}"
     )
 
 try:
@@ -154,6 +154,18 @@ class GenerateAudienceRequest(BaseModel):
     input_data: dict  # Direct JSON data containing audiences
     output_blob_prefix: str = "audience_output"  # Prefix for output JSON
     max_concurrent: int = Field(default=10, ge=1, le=50)
+    selected_sections: list[str] | None = Field(
+        default=None,
+        description="List of section names user selected to answer. If None, all sections are used."
+    )
+    quota_enabled: bool = Field(
+        default=False,
+        description="If True (quota='YES'), age and income are mandatory for response generation."
+    )
+    sample_survey_summary: str = Field(
+        default="",
+        description="Summarized sample survey dataset for context in generation."
+    )
 
 
 class GenerateAudienceResponse(BaseModel):
@@ -397,6 +409,11 @@ def process_file(req: ProcessRequest):
         questions_labels = (
             extract_questions_labels(result) if isinstance(result, dict) else []
         )
+        
+        # Extract sections for quota selection screen
+        sections = (
+            extract_sections(result) if isinstance(result, dict) else []
+        )
 
         # ---------- SUCCESS RESPONSE ----------
         return {
@@ -405,6 +422,7 @@ def process_file(req: ProcessRequest):
             "output_blob": output_url,  # ALWAYS SAS URL on success
             "questions_extracted": questions_extracted,
             "questions_labels": questions_labels,
+            "sections": sections,  # All sections for user selection in quota screen
         }
 
     except Exception as e:
@@ -1001,6 +1019,7 @@ def process_audience_generation_background(
                 "persona": aud.get("persona", {}),
                 "screenerQuestions": aud.get("screenerQuestions", []),
                 "sampleSize": aud.get("sampleSize", 1),
+                "quotas": aud.get("quotas", {}),
             }
             for aud in audiences
         ]
@@ -1013,6 +1032,9 @@ def process_audience_generation_background(
                     audience_data=aud,
                     audience_index=idx,
                     max_concurrent=req.max_concurrent,
+                    selected_sections=req.selected_sections,
+                    quota_enabled=req.quota_enabled,
+                    sample_survey_summary=req.sample_survey_summary,
                 )
                 for idx, aud in enumerate(normalized_audiences)
             ]
@@ -1048,6 +1070,8 @@ def process_audience_generation_background(
             "total_successfully_generated": total_generated,
             "total_failed": total_failed,
             "processing_time_seconds": round(processing_time, 2),
+            "selected_sections": req.selected_sections,
+            "quota_enabled": req.quota_enabled,
             "audiences": enriched_audiences,
         }
 
