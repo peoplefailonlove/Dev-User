@@ -59,6 +59,8 @@ class GeneratedMember(BaseModel):
     frustrations: list[str]
     need_state: str
     occasions: str
+    role: str | None = None
+    industry: str | None = None
 
 
 # ============================================================================#
@@ -114,6 +116,10 @@ def create_generation_prompt(member: dict[str, Any]) -> str:
     """
     persona = member.get("persona_template", {})
     screener_responses = member.get("screener_responses", [])
+    
+    # Get distribution constraints if provided
+    role_constraint = member.get("role_constraint")
+    industry_constraint = member.get("industry_constraint")
 
     # Format screener Q&A
     screener_section = ""
@@ -130,6 +136,16 @@ def create_generation_prompt(member: dict[str, Any]) -> str:
     else:
         screener_section = "No screener responses available."
 
+    # Build distribution constraints section
+    constraints_section = ""
+    if role_constraint or industry_constraint:
+        constraints_section = "\n## Distribution Constraints (MUST follow)\n"
+        if role_constraint:
+            constraints_section += f"- **Role**: {role_constraint}\n"
+        if industry_constraint:
+            constraints_section += f"- **Industry**: {industry_constraint}\n"
+        constraints_section += "\nThe generated persona MUST work in the specified role and industry. Incorporate these into the about section and make the profile consistent with this professional context.\n"
+
     prompt = f"""Generate a detailed audience member profile for the following persona:
 
 ## Base Persona Template
@@ -138,7 +154,7 @@ def create_generation_prompt(member: dict[str, Any]) -> str:
 - **Frustrations**: {persona.get('frustrations', 'N/A')}
 - **Need State**: {persona.get('need_state', 'N/A')}
 - **Occasions**: {persona.get('occasions', 'N/A')}
-
+{constraints_section}
 Above information is enough to understand persona's traits and behavior. Use the screener responses below to create variations and generate a complete, realistic audience member profile as JSON.
 
 ## Screener Responses
@@ -260,7 +276,11 @@ async def _call_llm(
 
 
 def _parse_llm_response(
-    content: str, member_id: str, audience_index: int
+    content: str,
+    member_id: str,
+    audience_index: int,
+    role_constraint: str | None = None,
+    industry_constraint: str | None = None,
 ) -> GeneratedMember:
     """
     Parse LLM response using Pydantic validation.
@@ -276,6 +296,8 @@ def _parse_llm_response(
         frustrations=profile.frustrations,
         need_state=profile.needState,
         occasions=profile.occasions,
+        role=role_constraint,
+        industry=industry_constraint,
     )
 
 
@@ -291,11 +313,15 @@ async def generate_member(
     prompt = create_generation_prompt(member)
     member_id = member.get("member_id", "unknown")
     audience_index = member.get("audience_index", -1)
+    role_constraint = member.get("role_constraint")
+    industry_constraint = member.get("industry_constraint")
 
     for attempt in range(max_retries):
         try:
             content = await _call_llm(client, deployment, prompt)
-            return _parse_llm_response(content, member_id, audience_index)
+            return _parse_llm_response(
+                content, member_id, audience_index, role_constraint, industry_constraint
+            )
 
         except (json.JSONDecodeError, ValidationError) as e:
             logger.warning(
@@ -356,10 +382,18 @@ def convert_persona_to_template(persona: dict[str, Any]) -> dict[str, Any]:
 
 
 def convert_audience_to_members(
-    audience_data: dict[str, Any], audience_index: int
+    audience_data: dict[str, Any],
+    audience_index: int,
+    distribution_assignments: list[dict[str, str]] | None = None,
 ) -> list[dict[str, Any]]:
     """
     Convert audience data to member format expected by generation functions.
+    
+    Args:
+        audience_data: Audience configuration with persona and screener questions
+        audience_index: Index of this audience
+        distribution_assignments: Optional list of {"role": ..., "industry": ...} dicts
+                                  to assign to each member for distribution matching
     """
     persona = audience_data.get("persona", {})
     persona_template = convert_persona_to_template(persona)
@@ -374,6 +408,13 @@ def convert_audience_to_members(
             "persona_template": persona_template,
             "screener_responses": screener_questions,
         }
+        
+        # Apply distribution constraints if provided
+        if distribution_assignments and idx < len(distribution_assignments):
+            assignment = distribution_assignments[idx]
+            member["role_constraint"] = assignment.get("role")
+            member["industry_constraint"] = assignment.get("industry")
+        
         members.append(member)
 
     return members
@@ -505,20 +546,37 @@ async def generate_all_parallel(
     deployment: str,
     audiences: list[dict[str, Any]],
     max_concurrent: int = 10,
+    distribution_assignments: list[dict[str, str]] | None = None,
 ) -> list[dict[str, Any]]:
     """
     Generate characteristics for ALL audiences in parallel.
 
     Uses a single global semaphore to control total concurrent API calls.
+    
+    Args:
+        client: Azure OpenAI client
+        deployment: Deployment name
+        audiences: List of audience configurations
+        max_concurrent: Max concurrent API calls
+        distribution_assignments: Optional list of {"role": ..., "industry": ...} dicts
+                                  to assign to members for distribution matching
     """
     start_time = time.time()
 
     # Flatten all members with audience tracking
     all_members: list[dict[str, Any]] = []
     ranges: list[tuple[int, int, int, dict[str, Any]]] = []
-
+    
+    assignment_idx = 0
     for idx, aud in enumerate(audiences):
-        members = convert_audience_to_members(aud, idx)
+        sample_size = aud.get("sampleSize", 1)
+        # Slice distribution assignments for this audience
+        aud_assignments = None
+        if distribution_assignments:
+            aud_assignments = distribution_assignments[assignment_idx:assignment_idx + sample_size]
+            assignment_idx += sample_size
+        
+        members = convert_audience_to_members(aud, idx, aud_assignments)
         start_idx = len(all_members)
         all_members.extend(members)
         ranges.append((idx, start_idx, len(all_members), aud))
@@ -562,10 +620,19 @@ async def run_generation_async(
     output_path: Path,
     max_concurrent: int = 10,
     parallel_mode: bool = True,
+    distribution_statistics: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Run characteristic generation on all audiences in the input file using async.
     Uses Azure OpenAI.
+    
+    Args:
+        input_path: Path to input JSON with audiences
+        output_path: Path to write output JSON
+        max_concurrent: Max concurrent API calls
+        parallel_mode: Whether to process audiences in parallel
+        distribution_statistics: Optional dict with "role" and "industry" distributions
+                                 to match in the generated personas
     """
     client, deployment = _create_azure_client()
     logger.info("Provider: Azure OpenAI (deployment=%s)", deployment)
@@ -584,9 +651,18 @@ async def run_generation_async(
     logger.info("Total samples to generate: %d", total_samples)
     logger.info("Parallel mode: %s | max_concurrent=%d", parallel_mode, max_concurrent)
 
+    # Generate distribution assignments if statistics provided
+    distribution_assignments = None
+    if distribution_statistics:
+        from distribution_sampler import generate_persona_assignments, print_distribution_summary
+        distribution_assignments = generate_persona_assignments(total_samples, distribution_statistics)
+        print("\nTarget distribution assignments generated:")
+        print_distribution_summary(distribution_assignments)
+        logger.info("Generated %d distribution assignments", len(distribution_assignments))
+
     if parallel_mode:
         enriched_audiences = await generate_all_parallel(
-            client, deployment, audiences, max_concurrent
+            client, deployment, audiences, max_concurrent, distribution_assignments
         )
     else:
         # Sequential audiences with per-audience concurrency
@@ -644,12 +720,22 @@ def run_generation(
     output_path: Path,
     max_concurrent: int = 10,
     parallel_mode: bool = True,
+    distribution_statistics: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Synchronous wrapper for run_generation_async.
+    
+    Args:
+        input_path: Path to input JSON with audiences
+        output_path: Path to write output JSON
+        max_concurrent: Max concurrent API calls
+        parallel_mode: Whether to process audiences in parallel
+        distribution_statistics: Optional dict with "role" and "industry" distributions
     """
     return asyncio.run(
-        run_generation_async(input_path, output_path, max_concurrent, parallel_mode)
+        run_generation_async(
+            input_path, output_path, max_concurrent, parallel_mode, distribution_statistics
+        )
     )
 
 
@@ -721,6 +807,12 @@ def main() -> None:
         action="store_true",
         help="Process audiences sequentially instead of in parallel",
     )
+    parser.add_argument(
+        "--distribution",
+        type=Path,
+        default=None,
+        help="Path to JSON file with target distribution statistics (role/industry percentages)",
+    )
 
     args = parser.parse_args()
 
@@ -729,10 +821,23 @@ def main() -> None:
         print(f"Error: Input file not found: {args.input}")
         return
 
+    # Load distribution statistics if provided
+    distribution_statistics = None
+    if args.distribution:
+        if not args.distribution.exists():
+            print(f"Error: Distribution file not found: {args.distribution}")
+            return
+        with open(args.distribution, "r", encoding="utf-8") as f:
+            dist_data = json.load(f)
+            distribution_statistics = dist_data.get("statistics", dist_data)
+        print(f"Loaded distribution statistics from: {args.distribution}")
+
     print("Starting characteristic generation...")
     print(f"Input: {args.input}")
     print(f"Output: {args.output}")
     print(f"Max Concurrent Requests: {args.concurrent}")
+    if distribution_statistics:
+        print("Distribution matching: ENABLED")
 
     start_time = time.time()
 
@@ -742,6 +847,7 @@ def main() -> None:
             args.output,
             args.concurrent,
             parallel_mode=not args.sequential,
+            distribution_statistics=distribution_statistics,
         )
 
         elapsed_time = time.time() - start_time

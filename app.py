@@ -46,10 +46,18 @@ try:
     from generate_audience_characteristics import (
         _create_azure_client,
         generate_audience_characteristics,
+        generate_all_parallel,
     )
 except Exception as e:
     raise ImportError(
         f"Failed to import from generate_audience_characteristics.py: {e}"
+    )
+
+try:
+    from distribution_sampler import generate_persona_assignments
+except Exception as e:
+    raise ImportError(
+        f"Failed to import from distribution_sampler.py: {e}"
     )
 
 try:
@@ -154,6 +162,10 @@ class GenerateAudienceRequest(BaseModel):
     input_data: dict  # Direct JSON data containing audiences
     output_blob_prefix: str = "audience_output"  # Prefix for output JSON
     max_concurrent: int = Field(default=10, ge=1, le=50)
+    distribution_statistics: dict | None = Field(
+        default=None,
+        description="Optional distribution statistics with 'role' and 'industry' percentages to match"
+    )
 
 
 class GenerateAudienceResponse(BaseModel):
@@ -1005,18 +1017,25 @@ def process_audience_generation_background(
             for aud in audiences
         ]
 
+        # Generate distribution assignments if statistics provided
+        distribution_assignments = None
+        if req.distribution_statistics:
+            total_samples = sum(aud.get("sampleSize", 1) for aud in normalized_audiences)
+            distribution_assignments = generate_persona_assignments(
+                total_samples, req.distribution_statistics
+            )
+            logger.info(
+                f"Task {task_id}: Generated {len(distribution_assignments)} distribution assignments"
+            )
+
         async def run_generation():
-            tasks = [
-                generate_audience_characteristics(
-                    client=client,
-                    deployment=deployment,
-                    audience_data=aud,
-                    audience_index=idx,
-                    max_concurrent=req.max_concurrent,
-                )
-                for idx, aud in enumerate(normalized_audiences)
-            ]
-            return await asyncio.gather(*tasks)
+            return await generate_all_parallel(
+                client=client,
+                deployment=deployment,
+                audiences=normalized_audiences,
+                max_concurrent=req.max_concurrent,
+                distribution_assignments=distribution_assignments,
+            )
 
         enriched_audiences = asyncio.run(run_generation())
 

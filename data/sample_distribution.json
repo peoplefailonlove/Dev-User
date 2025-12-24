@@ -1,0 +1,44 @@
+{
+  "statistics": {
+    "role": {
+      "BR": 68.89,
+      "pvt vendor": 31.11
+    },
+    "industry": {
+      "Advertising, Public Relations, and Related Services": 2.22,
+      "Pharmaceutical and Medicine Manufacturing": 4.44,
+      "Scientific Research and Development Services": 6.67,
+      "Other Personal Services": 2.22,
+      "Converted Paper Product Manufacturing": 2.22,
+      "Outpatient Care Centers": 2.22,
+      "Soap, Cleaning Compound, and Toilet Preparation Manufacturing": 2.22,
+      "Motion Picture and Video Industries": 2.22,
+      "Legal Services": 11.11,
+      "Computer Systems Design and Related Services": 2.22,
+      "Machinery, Equipment, and Supplies Merchant Wholesalers": 2.22,
+      "Architectural, Engineering, and Related Services": 4.44,
+      "Media Streaming Distribution Services, Social Networks, and Other Media Networks and Content Providers": 2.22,
+      "Traveler Accommodation": 2.22,
+      "Business Support Services": 2.22,
+      "Employment Services": 6.67,
+      "Scenic and Sightseeing Transportation, Land": 2.22,
+      "Household Appliances and Electrical and Electronic Goods Merchant Wholesalers": 2.22,
+      "Printing and Related Support Activities": 2.22,
+      "Residential Building Construction": 2.22,
+      "Offices of Other Health Practitioners": 2.22,
+      "Software Publishers": 2.22,
+      "Activities Related to Real Estate": 2.22,
+      "Drycleaning and Laundry Services": 2.22,
+      "Other Professional, Scientific, and Technical Services": 2.22,
+      "Unclassified": 4.44,
+      "Deep Sea, Coastal, and Great Lakes Water Transportation": 2.22,
+      "Management, Scientific, and Technical Consulting Services": 2.22,
+      "Accounting, Tax Preparation, Bookkeeping, and Payroll Services": 2.22,
+      "Other Miscellaneous Manufacturing": 2.22,
+      "Other Ambulatory Health Care Services": 2.22,
+      "Miscellaneous Nondurable Goods Merchant Wholesalers": 2.22,
+      "General Freight Trucking": 2.22,
+      "Justice, Public Order, and Safety Activities": 2.22
+    }
+  }
+}
