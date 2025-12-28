@@ -211,7 +211,7 @@ def _create_azure_client() -> tuple[AzureChatOpenAI, str]:
         api_version=api_version,
         azure_endpoint=endpoint,
         azure_deployment=deployment,
-        temperature=0.8,
+        # NOTE: no temperature here – GPT-5 only supports default temperature=1
         max_tokens=4096,
         model_kwargs={"response_format": {"type": "json_object"}},
         include_response_headers=True,  # observability: rate-limit headers
@@ -481,7 +481,7 @@ def _build_audience_result(
             generated.append(
                 {
                     "member_id": f"AUD{audience_index}_{i + 1:04d}",
-                    "generation_error": "Failed to generate",
+                    "generation_error": "Failed to generate", #TODO: Need rework on this. 
                 }
             )
             failed_count += 1

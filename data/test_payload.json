@@ -1,0 +1,315 @@
+{
+  "input_data": {
+    "userId": 1,
+    "projectId": 80,
+    "projectName": "Concept Test A",
+    "projectDescription": "Testing moisturizers",
+    "CompanyDetails": {
+      "companyName": "BILL (Bill.com)",
+      "brandName": "BILL",
+      "formerName": "Bill.com",
+      "ticker": "NYSE: BILL",
+      "headquarters": "San Jose, California, United States",
+      "foundedYear": 2006,
+      "category": "Fintech / Financial Operations Platform",
+      "mission": "Make it simple to connect and do business by digitizing and automating financial operations for SMBs.",
+      "whatTheyDo": "Automates accounts payable (AP), accounts receivable (AR), invoicing, payments, and spend/expense management for SMBs and accounting firms.",
+      "coreProducts": [
+        {
+          "name": "BILL Accounts Payable (AP) Automation",
+          "summary": "Invoice capture, approval workflows, vendor payments (ACH/check/card/wire), audit trails, and accounting sync."
+        },
+        {
+          "name": "BILL Accounts Receivable (AR) / Invoicing",
+          "summary": "Send invoices, accept payments, reminders, customer portal; includes Invoice2go capabilities for mobile-first invoicing."
+        },
+        {
+          "name": "BILL Spend & Expense (Divvy)",
+          "summary": "Corporate card + real-time budget controls + automated expense tracking and receipt capture."
+        },
+        {
+          "name": "Payments Network",
+          "summary": "Network connecting businesses, vendors, and clients for faster electronic payments; supports multiple payment rails."
+        }
+      ],
+      "targetCustomers": {
+        "primary": "Small and mid-sized businesses (SMBs)",
+        "secondary": [
+          "Accounting firms / CPAs / bookkeepers",
+          "Financial institutions offering SMB bill-pay and automation"
+        ],
+        "commonUseCases": [
+          "Replace paper checks with digital payments",
+          "Automate invoice processing and approvals",
+          "Reduce close time and manual reconciliation",
+          "Improve cash flow visibility and control"
+        ]
+      },
+      "integrationsAndPartners": {
+        "accountingAndERPIntegrations": [
+          "QuickBooks",
+          "Xero",
+          "Oracle NetSuite",
+          "Sage Intacct",
+          "Microsoft Dynamics"
+        ],
+        "channels": [
+          "CPA / accounting firm programs",
+          "Bank / financial institution partnerships"
+        ]
+      },
+      "positioning": {
+        "differentiators": [
+          "Unified platform (AP + AR + Spend/Expense)",
+          "Strong accountant ecosystem distribution",
+          "Payments network effects",
+          "Automation and workflow controls for SMB finance teams"
+        ],
+        "typicalBuyerConcerns": [
+          "Visibility into cash flow",
+          "Controls + compliance + auditability",
+          "Reducing manual work and cycle times",
+          "Reducing payment risk and errors"
+        ]
+      },
+      "competitiveLandscape": {
+        "accountsPayableAutomation": [
+          "AvidXchange",
+          "Tipalti",
+          "Stampli",
+          "MineralTree",
+          "Medius",
+          "Yooz"
+        ],
+        "spendManagement": [
+          "Ramp",
+          "Brex",
+          "Expensify",
+          "Airbase",
+          "Navan (TripActions)"
+        ],
+        "accountingPlatformsWithNativePayables": [
+          "Intuit QuickBooks Bill Pay",
+          "Xero (ecosystem tools)"
+        ]
+      },
+      "whyRelevantToCFO": {
+        "kpiAlignment": [
+          "Profitability",
+          "Cash Flow Accuracy",
+          "Working Capital",
+          "Compliance"
+        ],
+        "automationMessaging": [
+          "Automation for visibility",
+          "Faster cash application",
+          "Risk reduction",
+          "Stronger controls and audit trails"
+        ]
+      }
+    },
+    "audiences": [
+      {
+        "persona": {
+          "id": 201,
+          "personaName": "Amit Verma",
+          "generatedTitle": "Mr. Finance: Strategic CFO Driving Growth",
+          "personaType": "Enterprise CFO",
+          "age": 45,
+          "gender": "Male",
+          "ethnicity": "Indian",
+          "location": "United States",
+          "userId": 1,
+          "createdAt": "2025-12-19T13:45:00.000Z",
+          "about": "Amit Verma is a seasoned Chief Financial Officer responsible for overseeing financial strategy, capital allocation, and enterprise risk management. He ensures compliance, reporting accuracy, and long-term financial health while aligning finance operations with business growth and operational efficiency.",
+          "needState": "Analytical, risk-conscious, and growth-driven.",
+          "goalsAndMotivations": "To drive profitability and cost efficiency, optimize cash flow and working capital, strengthen financial reporting and compliance frameworks, and enable scalable business growth through financial discipline and automation.",
+          "frustrations": "Balancing transformation initiatives with cost control, managing forecasting uncertainty, navigating supply chain disruptions, mitigating financial and regulatory risk, and operating with limited real-time financial visibility.",
+          "occasions": "Reviews financial performance during monthly and quarterly closes, evaluates capital investment decisions, monitors risk exposure and compliance metrics, and assesses automation solutions for better visibility, faster cash application, and risk reduction.",
+          "requestParams": {
+            "KPIs": [
+              "Profitability",
+              "Cash Flow Accuracy",
+              "Working Capital Optimization",
+              "Regulatory Compliance"
+            ],
+            "messagingFocus": [
+              "Automation for real-time financial visibility",
+              "Faster cash application",
+              "Risk reduction",
+              "Operational efficiency at scale"
+            ]
+          }
+        },
+        "variables": [
+          {
+            "variableName": "Job Title",
+            "selectedOption": "C-Level",
+            "breakdown": {
+              "C-Level": 100
+            }
+          },
+          {
+            "variableName": "Company Revenue",
+            "selectedOption": "$100M+",
+            "breakdown": {
+              "<50M": 0,
+              "50M-100M": 20,
+              "100M-250M": 40,
+              "250M+": 40
+            }
+          },
+          {
+            "variableName": "Employees in Company",
+            "selectedOption": "500-5000",
+            "breakdown": {
+              "1-100": 0,
+              "100-500": 20,
+              "500-1000": 40,
+              "1000-5000": 40
+            }
+          }
+        ],
+        "sampleSize": 20,
+        "quotaSurvey": "Yes",
+        "screenerQuestions": [
+          {
+            "question": "Which of the following best describes your current role?",
+            "answer": "Chief Financial Officer (CFO)"
+          },
+          {
+            "question": "What is the total annual revenue of your organization?",
+            "answer": "$100 million or more"
+          },
+          {
+            "question": "Which KPIs are you primarily accountable for?",
+            "answer": "Profitability, Cash Flow Accuracy, Compliance"
+          }
+        ]
+      },
+      {
+        "persona": {
+          "id": 201,
+          "personaName": "Amit Verma",
+          "generatedTitle": "Mr. Finance: Strategic CFO Driving Growth",
+          "personaType": "Enterprise CFO",
+          "age": 45,
+          "gender": "Male",
+          "ethnicity": "Indian",
+          "location": "United States",
+          "userId": 1,
+          "createdAt": "2025-12-19T13:45:00.000Z",
+          "about": "Amit Verma is a seasoned Chief Financial Officer responsible for overseeing financial strategy, capital allocation, and enterprise risk management. He ensures compliance, reporting accuracy, and long-term financial health while aligning finance operations with business growth and operational efficiency.",
+          "needState": "Analytical, risk-conscious, and growth-driven.",
+          "goalsAndMotivations": "To drive profitability and cost efficiency, optimize cash flow and working capital, strengthen financial reporting and compliance frameworks, and enable scalable business growth through financial discipline and automation.",
+          "frustrations": "Balancing transformation initiatives with cost control, managing forecasting uncertainty, navigating supply chain disruptions, mitigating financial and regulatory risk, and operating with limited real-time financial visibility.",
+          "occasions": "Reviews financial performance during monthly and quarterly closes, evaluates capital investment decisions, monitors risk exposure and compliance metrics, and assesses automation solutions for better visibility, faster cash application, and risk reduction.",
+          "requestParams": {
+            "KPIs": [
+              "Profitability",
+              "Cash Flow Accuracy",
+              "Working Capital Optimization",
+              "Regulatory Compliance"
+            ],
+            "messagingFocus": [
+              "Automation for real-time financial visibility",
+              "Faster cash application",
+              "Risk reduction and compliance assurance",
+              "Operational efficiency at scale"
+            ]
+          }
+        },
+        "variables": [
+          {
+            "variableName": "Job Title",
+            "selectedOption": "C-Level",
+            "breakdown": {
+              "C-Level": 100
+            }
+          },
+          {
+            "variableName": "Company Revenue",
+            "selectedOption": "$100M+",
+            "breakdown": {
+              "<50M": 0,
+              "50M-100M": 20,
+              "100M-250M": 40,
+              "250M+": 40
+            }
+          },
+          {
+            "variableName": "Employees in Company",
+            "selectedOption": "500-5000",
+            "breakdown": {
+              "1-100": 0,
+              "100-500": 20,
+              "500-1000": 40,
+              "1000-5000": 40
+            }
+          }
+        ],
+        "sampleSize": 10,
+        "quotaSurvey": "Yes",
+        "screenerQuestions": [
+          {
+            "question": "Which of the following best describes your current role?",
+            "answer": "Chief Financial Officer (CFO)"
+          },
+          {
+            "question": "What is the total annual revenue of your organization?",
+            "answer": "$100 million or more"
+          },
+          {
+            "question": "Which KPIs are you primarily accountable for?",
+            "answer": "Profitability, Cash Flow Accuracy, Compliance"
+          }
+        ]
+      }
+    ],
+    "json_file_url": "https://syncbillblob.blob.core.windows.net/json-output-container/survey_extracted_20251204T064011Z_c2295488.json"
+  },
+  "output_blob_prefix": "audience_output",
+  "max_concurrent": 10,
+  "distribution_statistics": {
+    "role": {
+      "BR": 68.89,
+      "pvt vendor": 31.11
+    },
+    "industry": {
+      "Legal Services": 11.11,
+      "Scientific Research and Development Services": 6.67,
+      "Employment Services": 6.67,
+      "Pharmaceutical and Medicine Manufacturing": 4.44,
+      "Architectural, Engineering, and Related Services": 4.44,
+      "Unclassified": 4.44,
+      "Advertising, Public Relations, and Related Services": 2.22,
+      "Other Personal Services": 2.22,
+      "Converted Paper Product Manufacturing": 2.22,
+      "Outpatient Care Centers": 2.22,
+      "Soap, Cleaning Compound, and Toilet Preparation Manufacturing": 2.22,
+      "Motion Picture and Video Industries": 2.22,
+      "Computer Systems Design and Related Services": 2.22,
+      "Machinery, Equipment, and Supplies Merchant Wholesalers": 2.22,
+      "Media Streaming Distribution Services, Social Networks, and Other Media Networks and Content Providers": 2.22,
+      "Traveler Accommodation": 2.22,
+      "Business Support Services": 2.22,
+      "Scenic and Sightseeing Transportation, Land": 2.22,
+      "Household Appliances and Electrical and Electronic Goods Merchant Wholesalers": 2.22,
+      "Printing and Related Support Activities": 2.22,
+      "Residential Building Construction": 2.22,
+      "Offices of Other Health Practitioners": 2.22,
+      "Software Publishers": 2.22,
+      "Activities Related to Real Estate": 2.22,
+      "Drycleaning and Laundry Services": 2.22,
+      "Other Professional, Scientific, and Technical Services": 2.22,
+      "Deep Sea, Coastal, and Great Lakes Water Transportation": 2.22,
+      "Management, Scientific, and Technical Consulting Services": 2.22,
+      "Accounting, Tax Preparation, Bookkeeping, and Payroll Services": 2.22,
+      "Other Miscellaneous Manufacturing": 2.22,
+      "Other Ambulatory Health Care Services": 2.22,
+      "Miscellaneous Nondurable Goods Merchant Wholesalers": 2.22,
+      "General Freight Trucking": 2.22,
+      "Justice, Public Order, and Safety Activities": 2.22
+    }
+  }
+}

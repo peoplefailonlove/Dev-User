@@ -2,7 +2,7 @@
   "statistics": {
     "role": {
       "BR": 68.89,
-      "pvt vendor": 31.11
+      "pvt_vendor": 31.11
     },
     "industry": {
       "Advertising, Public Relations, and Related Services": 2.22,
@@ -40,5 +40,52 @@
       "General Freight Trucking": 2.22,
       "Justice, Public Order, and Safety Activities": 2.22
     }
-  }
+  },
+  "data": [
+    {
+      "role": "BR",
+      "industry": "Advertising, Public Relations, and Related Services",
+      "summary": "In Advertising, Public Relations, and Related Services, a BR persona who is an SVP of Treasury or similar, employed full-time (30 hours per week or more) at a company with 5,000 to 9,999 employees and $1 billion to under $5 billion in revenue, sits in Accounts Payable (AP) and uses third-party platforms including Apex, Taulia, and home-grown tools. They prioritize systemic consistency, increased automation, real-time reporting, and extending existing tech investments. The concept ranked second overall (PosRank 2.0) with moderate decision-making involvement and familiarity. Key features selected were Automated Delivery and Works with your automation & ERP. Benefits emphasized include reducing manual processes, receiving a daily consolidated remittance file, faster payments via check-to-ACH conversion, multi-entity bank account management, and a fast implementation measured in weeks. Willingness to pay was high (4.0), with an average DSO of 60 days and paper checks still in use.",
+      "statistics": {
+        "role_percentage": 68.89,
+        "industry_percentage": 2.22
+      }
+    },
+    {
+      "role": "BR",
+      "industry": "Pharmaceutical and Medicine Manufacturing",
+      "summary": "BR respondents in Pharmaceutical and Medicine Manufacturing valued an Enterprise Portal, daily Remittance File delivery, Bank Account Management, and Tailored Remittance. Benefits focused on reducing manual remittance costs, improving analyst efficiency, faster payments via ACH, flexible routing and timing, accurate reconciliation across entities, and an easy rollout without a heavy software suite. Impressions were positive, willingness to pay averaged 3.0, and positioning scores were largely 2.0 with a PosRank of 3.0. Respondents were full-time AR leaders at mid-sized companies, using systems such as Great Plains and multiple third-party tools, with paper checks still part of the AR mix.",
+      "statistics": {
+        "role_percentage": 68.89,
+        "industry_percentage": 4.44
+      }
+    },
+    {
+      "role": "pvt_vendor",
+      "industry": "Scientific Research and Development Services",
+      "summary": "A private vendor AR Manager in Scientific Research and Development Services emphasized Check Conversion and Works with your automation & ERP. Benefits included automated delivery, consolidated remittance files, analyst efficiency gains, faster payments, and rapid implementation. Despite these benefits, impressions were not interested due to prior investment in existing solutions, with willingness to pay at 1.0 and PosRank 4.0. Average DSO was 37 days, paper checks remained preferred by some customers, and the environment was heterogeneous with multiple third-party tools.",
+      "statistics": {
+        "role_percentage": 31.11,
+        "industry_percentage": 6.67
+      }
+    },
+    {
+      "role": "BR",
+      "industry": "Scientific Research and Development Services",
+      "summary": "BR respondents in Scientific Research and Development Services prioritized custom reports, ERP and automation integration, and an Enterprise Portal with strong access controls. Benefits included daily consolidated remittance files, cost savings from reduced manual remittance, faster payments via ACH, flexible routing and tailored remittance, multi-entity bank account management, and automated delivery. Impressions were positive, willingness to pay ranged from 1.0 to 3.0, and PosRank averaged 2.0. Respondents spanned AR Managers and Controllers across a wide range of company sizes and revenues, with mixed AR payment methods and moderate automation levels.",
+      "statistics": {
+        "role_percentage": 68.89,
+        "industry_percentage": 6.67
+      }
+    },
+    {
+      "role": "BR",
+      "industry": "Other Personal Services",
+      "summary": "In Other Personal Services, a VP of Finance valued custom reports and seamless ERP integration. Benefits prioritized included automated payment delivery, consolidated remittance files, reduced errors, analyst efficiency gains, faster payments via ACH, and minimal IT effort for implementation. The solution was viewed as improving accounting efficiency, particularly given complex customer portals. Willingness to pay was 3.0, average DSO was 44 days, paper checks were still used, and positioning showed PosRank 4.0 with moderate decision-making influence and familiarity.",
+      "statistics": {
+        "role_percentage": 68.89,
+        "industry_percentage": 2.22
+      }
+    }
+  ]
 }

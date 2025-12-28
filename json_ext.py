@@ -236,7 +236,7 @@ def make_azure_client() -> AzureChatOpenAI:
         openai_api_key=api_key,
         openai_api_version=api_version,
         include_response_headers=True,
-        temperature=0.0,
+        # NOTE: no temperature here – GPT-5 only supports default temperature=1
         max_retries=3,
         timeout=timeout,
     )
