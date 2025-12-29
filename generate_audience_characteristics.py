@@ -17,22 +17,13 @@ from langchain_openai import AzureChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field, ValidationError
 
-from observability import get_logger, log_llm_usage, log_rate_limit
-
 load_dotenv()
 
 PROVIDER_AZURE = "azure"
 
-# -----------------------------------------------------------------------------
-# Logger + LLM timeout (observability-style like run_survey.py)
-# -----------------------------------------------------------------------------
-logger = get_logger("Audience Generator")
-
-AUDIENCE_LLM_TIMEOUT = float(os.getenv("AUDIENCE_LLM_TIMEOUT", "300"))
-
-# ============================================================================#
+# ============================================================================
 # Pydantic Models for Structured Output
-# ============================================================================#
+# ============================================================================
 
 class GeneratedProfile(BaseModel):
     """LLM output schema for generated audience profile."""
@@ -61,9 +52,9 @@ class GeneratedMember(BaseModel):
     occasions: str
 
 
-# ============================================================================#
+# ============================================================================
 # System Prompt with JSON Schema
-# ============================================================================#
+# ============================================================================
 
 GENERATION_SYSTEM_PROMPT = """You are an expert persona generator creating realistic audience member profiles.
 
@@ -108,9 +99,16 @@ Example output:
 IMPORTANT: Return ONLY the JSON object with actual values. Do NOT return a schema definition or type descriptions."""
 
 
-def create_generation_prompt(member: dict[str, Any]) -> str:
+def create_generation_prompt(member: dict[str, Any], reference_summary: str | None = None) -> str:
     """
     Create the generation prompt for a single audience member.
+
+    Args:
+        member: Audience member dictionary with attributes, persona_template, and screener_responses
+        reference_summary: Optional summary from past survey data to guide persona generation
+
+    Returns:
+        Formatted prompt string for characteristic generation
     """
     persona = member.get("persona_template", {})
     screener_responses = member.get("screener_responses", [])
@@ -122,13 +120,19 @@ def create_generation_prompt(member: dict[str, Any]) -> str:
         for response in screener_responses:
             question = response.get("question", "N/A")
             answer = response.get("answer", "N/A")
-            # Handle answer as list or string
-            if isinstance(answer, list):
-                answer = ", ".join(str(a) for a in answer)
             screener_lines.append(f"- **Q**: {question}\n  **A**: {answer}")
         screener_section = "\n".join(screener_lines)
     else:
         screener_section = "No screener responses available."
+
+    # Build reference section if available
+    reference_section = ""
+    if reference_summary:
+        reference_section = f"""\n## Reference from Past Survey Data
+The following summary describes typical respondents from previous surveys. Use this as guidance to create personas that align with historical patterns:
+
+{reference_summary}
+"""
 
     prompt = f"""Generate a detailed audience member profile for the following persona:
 
@@ -143,13 +147,14 @@ Above information is enough to understand persona's traits and behavior. Use the
 
 ## Screener Responses
 {screener_section}
-
+{reference_section}
 ## Important Guidelines
 1. Use the screener responses to inform lifestyle, work environment, and behavioral descriptions
 2. Ensure the generated profile is consistent with the screener answers
 3. The profile should feel like a real person, not a stereotype
 4. Maintain the spirit of the base persona while adapting to the screener context
 5. Generate a RANDOM, UNIQUE full name—avoid common names like "Ritvik", "Priya", "Sharma", "Nair". Be creative and diverse
+6. If reference data is provided, incorporate relevant traits and characteristics from past survey respondents
 
 Generate a complete, realistic audience member profile as JSON."""
 
@@ -182,25 +187,13 @@ def _create_azure_client() -> tuple[AzureChatOpenAI, str]:
             "  - OPENAI_API_VERSION (optional)"
         )
 
-    logger.info(
-        "Initializing AzureChatOpenAI (Audience Generator) | endpoint=%s | deployment=%s | api_version=%s | timeout=%.1fs",
-        endpoint,
-        deployment,
-        api_version,
-        AUDIENCE_LLM_TIMEOUT,
-    )
-
     client = AzureChatOpenAI(
         api_key=api_key,
         api_version=api_version,
         azure_endpoint=endpoint,
         azure_deployment=deployment,
-        temperature=0.8,
         max_tokens=4096,
         model_kwargs={"response_format": {"type": "json_object"}},
-        include_response_headers=True,  # observability: rate-limit headers
-        max_retries=3,
-        timeout=AUDIENCE_LLM_TIMEOUT,
     )
     return client, deployment
 
@@ -213,45 +206,23 @@ async def _call_llm(
     """
     Make an async LLM API call and return the response content.
 
-    Adds observability: token usage + latency + rate limit headers.
+    Args:
+        client: AzureChatOpenAI client
+        deployment: Azure deployment name (unused, configured in client)
+        prompt: User prompt
+
+    Returns:
+        Response content string
+
+    Raises:
+        ValueError: If API returns no content
     """
     messages = [
         SystemMessage(content=GENERATION_SYSTEM_PROMPT),
         HumanMessage(content=prompt),
     ]
 
-    start = time.time()
     response = await client.ainvoke(messages)
-    latency = time.time() - start
-
-    # ----- Observability: usage -----
-    usage_meta = getattr(response, "usage_metadata", None)
-    if isinstance(usage_meta, dict):
-        usage_for_logger = {
-            "prompt_tokens": usage_meta.get("input_tokens"),
-            "completion_tokens": usage_meta.get("output_tokens"),
-            "total_tokens": usage_meta.get("total_tokens"),
-        }
-    else:
-        usage_for_logger = usage_meta
-
-    log_llm_usage(
-        logger,
-        usage_for_logger,
-        latency_seconds=latency,
-        extra={"deployment": deployment},
-    )
-
-    # ----- Observability: rate limits -----
-    headers = None
-    response_metadata = getattr(response, "response_metadata", None)
-    if isinstance(response_metadata, dict):
-        headers = (
-            response_metadata.get("headers")
-            or response_metadata.get("response_headers")
-        )
-    if headers:
-        log_rate_limit(logger, headers)
 
     content = response.content
     if not content:
@@ -264,7 +235,20 @@ def _parse_llm_response(
 ) -> GeneratedMember:
     """
     Parse LLM response using Pydantic validation.
+
+    Args:
+        content: JSON string from LLM
+        member_id: ID for this member
+        audience_index: Index of the audience
+
+    Returns:
+        GeneratedMember with validated data
+
+    Raises:
+        ValidationError: If response doesn't match schema
+        json.JSONDecodeError: If response isn't valid JSON
     """
+    # Parse JSON and validate with Pydantic
     data = json.loads(content)
     profile = GeneratedProfile.model_validate(data)
 
@@ -284,11 +268,22 @@ async def generate_member(
     deployment: str,
     member: dict[str, Any],
     max_retries: int = 3,
+    reference_summary: str | None = None,
 ) -> GeneratedMember | None:
     """
     Generate characteristics for a single audience member.
+
+    Args:
+        client: AsyncAzureOpenAI client
+        deployment: Azure deployment name
+        member: Member data with persona_template and screener_responses
+        max_retries: Number of retries on failure
+        reference_summary: Optional summary from past survey data
+
+    Returns:
+        GeneratedMember or None if all retries fail
     """
-    prompt = create_generation_prompt(member)
+    prompt = create_generation_prompt(member, reference_summary)
     member_id = member.get("member_id", "unknown")
     audience_index = member.get("audience_index", -1)
 
@@ -298,39 +293,16 @@ async def generate_member(
             return _parse_llm_response(content, member_id, audience_index)
 
         except (json.JSONDecodeError, ValidationError) as e:
-            logger.warning(
-                "Validation/JSON error for member %s (attempt %d/%d): %s",
-                member_id,
-                attempt + 1,
-                max_retries,
-                e,
-            )
             if attempt < max_retries - 1:
                 await asyncio.sleep(0.5 * (attempt + 1))
             else:
-                logger.error(
-                    "Failed %s after %d attempts due to JSON/validation errors",
-                    member_id,
-                    max_retries,
-                )
+                print(f"  Failed {member_id} after {max_retries} attempts: {e}")
 
         except Exception as e:
-            logger.warning(
-                "API error for member %s (attempt %d/%d): %s",
-                member_id,
-                attempt + 1,
-                max_retries,
-                e,
-            )
             if attempt < max_retries - 1:
                 await asyncio.sleep(1)
             else:
-                logger.error(
-                    "API error for %s after %d attempts: %s",
-                    member_id,
-                    max_retries,
-                    e,
-                )
+                print(f"  API error for {member_id}: {e}")
 
     return None
 
@@ -338,6 +310,12 @@ async def generate_member(
 def convert_persona_to_template(persona: dict[str, Any]) -> dict[str, Any]:
     """
     Convert persona object from input format to persona_template format.
+
+    Args:
+        persona: Persona object with fields like personaName, about, etc.
+
+    Returns:
+        Persona template dictionary with standardized field names
     """
     return {
         "id": persona.get("id"),
@@ -360,6 +338,13 @@ def convert_audience_to_members(
 ) -> list[dict[str, Any]]:
     """
     Convert audience data to member format expected by generation functions.
+
+    Args:
+        audience_data: Audience dictionary with persona, screenerQuestions, and sampleSize
+        audience_index: Index of this audience in the input
+
+    Returns:
+        List of member dictionaries ready for characteristic generation
     """
     persona = audience_data.get("persona", {})
     persona_template = convert_persona_to_template(persona)
@@ -379,9 +364,10 @@ def convert_audience_to_members(
     return members
 
 
-# ============================================================================#
+# ============================================================================
 # Progress Tracking
-# ============================================================================#
+# ============================================================================
+
 
 class ProgressTracker:
     """Thread-safe progress tracker for parallel generation."""
@@ -394,19 +380,13 @@ class ProgressTracker:
     async def increment(self, member_id: str) -> None:
         async with self._lock:
             self.completed += 1
-            # Keep print for CLI, but also log
             print(f"  [{self.completed}/{self.total}] Generated: {member_id}")
-            logger.info(
-                "[Progress] %d/%d generated (member_id=%s)",
-                self.completed,
-                self.total,
-                member_id,
-            )
 
 
-# ============================================================================#
+# ============================================================================
 # Parallel Generation
-# ============================================================================#
+# ============================================================================
+
 
 async def _generate_with_semaphore(
     client: AzureChatOpenAI,
@@ -414,28 +394,89 @@ async def _generate_with_semaphore(
     member: dict[str, Any],
     semaphore: asyncio.Semaphore,
     progress: ProgressTracker,
+    reference_summary: str | None = None,
 ) -> GeneratedMember | None:
     """Generate a single member with rate limiting and progress tracking."""
     async with semaphore:
-        result = await generate_member(client, deployment, member)
+        result = await generate_member(client, deployment, member, reference_summary=reference_summary)
         if result:
             await progress.increment(result.member_id)
         return result
 
+async def _compute_variation_score(
+    client: AzureChatOpenAI,
+    parent_persona: dict[str, Any],
+    child_member: dict[str, Any],
+) -> float:
+    """
+    Compute variation score between parent persona and child member using LLM.
+    Returns a float 0.0-1.0 representing degree of variation.
+    """
+    import re
+    
+    # The main client has response_format: json_object, so we ask for JSON
+    prompt = f"""Compare these two personas and return a JSON object with a single "score" field (0.0-1.0) representing how different the child is from the parent.
+0.0 = identical, 1.0 = completely different.
 
-def _build_audience_result(
+Parent persona:
+- About: {parent_persona.get('about', '')}
+- Goals: {parent_persona.get('goals_and_motivations', parent_persona.get('goalsAndMotivations', ''))}
+- Frustrations: {parent_persona.get('frustrations', '')}
+- Need State: {parent_persona.get('need_state', parent_persona.get('needState', ''))}
+- Occasions: {parent_persona.get('occasions', '')}
+
+Child persona:
+- About: {child_member.get('about', '')}
+- Goals: {child_member.get('goals_and_motivations', '')}
+- Frustrations: {child_member.get('frustrations', '')}
+- Need State: {child_member.get('need_state', '')}
+- Occasions: {child_member.get('occasions', '')}
+
+Return ONLY a JSON object like: {{"score": 0.5}}"""
+
+    try:
+        messages = [HumanMessage(content=prompt)]
+        response = await client.ainvoke(messages)
+        score_str = str(response.content).strip()
+        # Parse JSON response
+        try:
+            data = json.loads(score_str)
+            if isinstance(data, dict) and "score" in data:
+                return min(1.0, max(0.0, float(data["score"])))
+        except json.JSONDecodeError:
+            pass
+        # Fallback: extract number from response
+        match = re.search(r'\d+\.?\d*', score_str)
+        if match:
+            return min(1.0, max(0.0, float(match.group())))
+    except Exception as e:
+        print(f"  Warning: Failed to compute variation score: {e}")
+    return 0.0
+
+
+async def _build_audience_result(
     audience_data: dict[str, Any],
     audience_index: int,
     results: list[GeneratedMember | None],
     generation_time: float,
+    client: AzureChatOpenAI | None = None,
 ) -> dict[str, Any]:
     """Build result dictionary for a single audience."""
     generated = []
     failed_count = 0
+    parent_persona = audience_data.get("persona", {})
 
     for i, result in enumerate(results):
         if result:
-            generated.append(result.model_dump())
+            member_dict = result.model_dump()
+            # Compute variation score asynchronously
+            if client and parent_persona:
+                member_dict["variation_score"] = await _compute_variation_score(
+                    client, parent_persona, member_dict
+                )
+            else:
+                member_dict["variation_score"] = 0.0
+            generated.append(member_dict)
         else:
             generated.append(
                 {
@@ -471,32 +512,38 @@ async def generate_audience_characteristics(
     audience_data: dict[str, Any],
     audience_index: int,
     max_concurrent: int = 10,
+    reference_summary: str | None = None,
 ) -> dict[str, Any]:
     """
     Generate characteristics for all members in a single audience.
+
+    Args:
+        client: AsyncAzureOpenAI client
+        deployment: Azure deployment name
+        audience_data: Audience dictionary with persona, screenerQuestions, sampleSize
+        audience_index: Index of this audience
+        max_concurrent: Maximum number of concurrent API calls
+        reference_summary: Optional summary from past survey data
+
+    Returns:
+        Dictionary with generated_audience and metadata sections
     """
     start_time = time.time()
     members = convert_audience_to_members(audience_data, audience_index)
 
     print(f"\nGenerating {len(members)} members for Audience {audience_index}...")
-    logger.info(
-        "Generating %d members for Audience %d (max_concurrent=%d)",
-        len(members),
-        audience_index,
-        max_concurrent,
-    )
 
     semaphore = asyncio.Semaphore(max_concurrent)
     progress = ProgressTracker(len(members))
 
     tasks = [
-        _generate_with_semaphore(client, deployment, m, semaphore, progress)
+        _generate_with_semaphore(client, deployment, m, semaphore, progress, reference_summary)
         for m in members
     ]
     results = await asyncio.gather(*tasks)
 
-    return _build_audience_result(
-        audience_data, audience_index, list(results), time.time() - start_time
+    return await _build_audience_result(
+        audience_data, audience_index, list(results), time.time() - start_time, client
     )
 
 
@@ -525,12 +572,6 @@ async def generate_all_parallel(
 
     total = len(all_members)
     print(f"\nGenerating {total} members across {len(audiences)} audiences...")
-    logger.info(
-        "Generating %d members across %d audiences (global max_concurrent=%d)",
-        total,
-        len(audiences),
-        max_concurrent,
-    )
 
     semaphore = asyncio.Semaphore(max_concurrent)
     progress = ProgressTracker(total)
@@ -546,14 +587,10 @@ async def generate_all_parallel(
     for idx, start_idx, end_idx, aud in ranges:
         results = list(all_results[start_idx:end_idx])
         enriched.append(
-            _build_audience_result(aud, idx, results, time.time() - start_time)
+            await _build_audience_result(aud, idx, results, time.time() - start_time, client)
         )
 
     print(f"\nCompleted in {time.time() - start_time:.2f}s")
-    logger.info(
-        "Completed generation for all audiences in %.2fs",
-        time.time() - start_time,
-    )
     return enriched
 
 
@@ -566,9 +603,21 @@ async def run_generation_async(
     """
     Run characteristic generation on all audiences in the input file using async.
     Uses Azure OpenAI.
+
+    Args:
+        input_path: Path to audience samples JSON file
+        output_path: Path to write generated results
+        max_concurrent: Maximum concurrent API calls (global limit in parallel mode)
+        parallel_mode: If True, generate all audiences/personas in parallel with
+                       a single global semaphore. If False, process audiences
+                       sequentially with per-audience concurrency.
+
+    Returns:
+        Complete results dictionary with generated characteristics
     """
+    # Initialize Azure OpenAI async client
     client, deployment = _create_azure_client()
-    logger.info("Provider: Azure OpenAI (deployment=%s)", deployment)
+    print(f"Provider: Azure OpenAI (deployment: {deployment})")
 
     # Load input data (personas_input format with audiences array)
     with open(input_path, "r", encoding="utf-8") as f:
@@ -580,9 +629,6 @@ async def run_generation_async(
     print(f"Loaded {len(audiences)} audiences from {input_path}")
     print(f"Total samples to generate: {total_samples}")
     print(f"Parallel mode: {parallel_mode}")
-    logger.info("Loaded %d audiences from %s", len(audiences), input_path)
-    logger.info("Total samples to generate: %d", total_samples)
-    logger.info("Parallel mode: %s | max_concurrent=%d", parallel_mode, max_concurrent)
 
     if parallel_mode:
         enriched_audiences = await generate_all_parallel(
@@ -592,8 +638,6 @@ async def run_generation_async(
         # Sequential audiences with per-audience concurrency
         enriched_audiences = []
         for idx, audience_data in enumerate(audiences):
-            print(f"\nGenerating members for Audience {idx} (sequential mode)...")
-            logger.info("Processing audience %d sequentially", idx)
             result = await generate_audience_characteristics(
                 client, deployment, audience_data, idx, max_concurrent
             )
@@ -628,14 +672,6 @@ async def run_generation_async(
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(results, f, indent=2, ensure_ascii=False)
 
-    logger.info(
-        "Audience generation completed. Output written to %s "
-        "(successfully_generated=%d, failed=%d)",
-        output_path,
-        total_generated,
-        total_failed,
-    )
-
     return results
 
 
@@ -647,6 +683,15 @@ def run_generation(
 ) -> dict[str, Any]:
     """
     Synchronous wrapper for run_generation_async.
+
+    Args:
+        input_path: Path to audience samples JSON file
+        output_path: Path to write generated results
+        max_concurrent: Maximum concurrent API calls
+        parallel_mode: If True, generate all audiences/personas in parallel
+
+    Returns:
+        Complete results dictionary with generated characteristics
     """
     return asyncio.run(
         run_generation_async(input_path, output_path, max_concurrent, parallel_mode)
@@ -754,10 +799,8 @@ def main() -> None:
 
     except ValueError as e:
         print(f"Configuration Error: {e}")
-        logger.error("Configuration Error: %s", e)
     except Exception as e:
         print(f"Error during generation: {e}")
-        logger.exception("Error during generation: %s", e)
         raise
 
 

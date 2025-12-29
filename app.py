@@ -995,6 +995,10 @@ def process_audience_generation_background(
             logger.error(f"Task {task_id}: No audiences found in input data")
             return
 
+        # Get reference distribution data if provided
+        reference_distribution = input_data.get("reference_distribution", {})
+        role_summaries = reference_distribution.get("role_summaries", [])
+
         # Run generation
         normalized_audiences = [
             {
@@ -1005,6 +1009,15 @@ def process_audience_generation_background(
             for aud in audiences
         ]
 
+        def get_reference_summary_for_audience(aud: dict) -> str | None:
+            """Get matching reference summary based on persona type/role."""
+            persona = aud.get("persona", {})
+            persona_type = persona.get("personaType", "")
+            for role_summary in role_summaries:
+                if role_summary.get("role", "").lower() == persona_type.lower():
+                    return role_summary.get("summary")
+            return None
+
         async def run_generation():
             tasks = [
                 generate_audience_characteristics(
@@ -1013,6 +1026,7 @@ def process_audience_generation_background(
                     audience_data=aud,
                     audience_index=idx,
                     max_concurrent=req.max_concurrent,
+                    reference_summary=get_reference_summary_for_audience(audiences[idx]),
                 )
                 for idx, aud in enumerate(normalized_audiences)
             ]
