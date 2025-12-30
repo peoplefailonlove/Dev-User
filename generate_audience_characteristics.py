@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import httpx
 from dotenv import load_dotenv
 from langchain_openai import AzureChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -112,6 +113,7 @@ def create_generation_prompt(member: dict[str, Any], reference_summary: str | No
     """
     persona = member.get("persona_template", {})
     screener_responses = member.get("screener_responses", [])
+    assigned_variables = member.get("assigned_variables", {})
 
     # Format screener Q&A
     screener_section = ""
@@ -120,10 +122,22 @@ def create_generation_prompt(member: dict[str, Any], reference_summary: str | No
         for response in screener_responses:
             question = response.get("question", "N/A")
             answer = response.get("answer", "N/A")
+            # Handle answer as list or string
+            if isinstance(answer, list):
+                answer = ", ".join(answer)
             screener_lines.append(f"- **Q**: {question}\n  **A**: {answer}")
         screener_section = "\n".join(screener_lines)
     else:
         screener_section = "No screener responses available."
+
+    # Format assigned variables/demographics
+    demographics_section = ""
+    if assigned_variables:
+        demo_lines = [f"- **{k}**: {v}" for k, v in assigned_variables.items()]
+        demographics_section = f"""\n## Assigned Demographics
+The persona MUST match these specific demographic attributes:
+{chr(10).join(demo_lines)}
+"""
 
     # Build reference section if available
     reference_section = ""
@@ -147,7 +161,7 @@ Above information is enough to understand persona's traits and behavior. Use the
 
 ## Screener Responses
 {screener_section}
-{reference_section}
+{demographics_section}{reference_section}
 ## Important Guidelines
 1. Use the screener responses to inform lifestyle, work environment, and behavioral descriptions
 2. Ensure the generated profile is consistent with the screener answers
@@ -155,6 +169,7 @@ Above information is enough to understand persona's traits and behavior. Use the
 4. Maintain the spirit of the base persona while adapting to the screener context
 5. Generate a RANDOM, UNIQUE full name—avoid common names like "Ritvik", "Priya", "Sharma", "Nair". Be creative and diverse
 6. If reference data is provided, incorporate relevant traits and characteristics from past survey respondents
+7. If demographics are assigned, the persona MUST reflect those attributes (e.g., if Gender is "female", generate a female persona)
 
 Generate a complete, realistic audience member profile as JSON."""
 
@@ -307,6 +322,100 @@ async def generate_member(
     return None
 
 
+# ============================================================================
+# Sample Data Processing - LLM Call 1 for Overall Summary
+# ============================================================================
+
+SAMPLE_DATA_SUMMARY_PROMPT = """You are an expert at synthesizing survey respondent data into actionable insights.
+
+Analyze the following respondent summaries and create ONE cohesive overall summary that:
+1. Identifies common patterns and trends across all respondents
+2. Highlights key behavioral traits, priorities, and pain points
+3. Includes quantitative patterns (e.g., average willingness to pay, DSO, preferences)
+4. Notes any notable variations between roles
+
+Keep the summary concise (300-400 words) but include specific data points that can guide persona generation.
+
+Respond with a JSON object containing a single "overall_summary" field.
+"""
+
+
+async def fetch_sample_data(sample_data_url: str) -> dict[str, Any] | None:
+    """
+    Fetch sample data JSON from URL.
+    
+    Args:
+        sample_data_url: URL to the sample data JSON file
+        
+    Returns:
+        Parsed JSON data or None if fetch fails
+    """
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(sample_data_url)
+            response.raise_for_status()
+            return response.json()
+    except Exception as e:
+        print(f"  Warning: Failed to fetch sample data from {sample_data_url}: {e}")
+        return None
+
+
+async def generate_overall_summary_from_sample_data(
+    client: AzureChatOpenAI,
+    sample_data: dict[str, Any],
+) -> str | None:
+    """
+    LLM Call 1: Generate overall summary from all BR summaries in sample data.
+    
+    Args:
+        client: AzureChatOpenAI client
+        sample_data: Parsed sample data JSON with 'data' array containing summaries
+        
+    Returns:
+        Overall summary string or None if generation fails
+    """
+    data_entries = sample_data.get("data", [])
+    if not data_entries:
+        print("  Warning: No data entries found in sample data")
+        return None
+    
+    # Collect only BR role summaries (filter out other roles)
+    summaries = []
+    for entry in data_entries:
+        role = entry.get("role", "")
+        summary = entry.get("summary", "")
+        # Only include entries with role="BR"
+        if role.upper() == "BR" and summary:
+            summaries.append(f"**{role}**:\n{summary}")
+    
+    if not summaries:
+        print("  Warning: No summaries found in sample data entries")
+        return None
+    
+    # Build prompt with all summaries
+    all_summaries_text = "\n\n".join(summaries)
+    user_prompt = f"""Here are {len(summaries)} respondent summaries:\n\n{all_summaries_text}\n\nGenerate a cohesive overall summary as JSON."""
+    
+    try:
+        messages = [
+            SystemMessage(content=SAMPLE_DATA_SUMMARY_PROMPT),
+            HumanMessage(content=user_prompt),
+        ]
+        response = await client.ainvoke(messages)
+        content = str(response.content).strip()
+        
+        # Parse JSON response
+        data = json.loads(content)
+        overall_summary = data.get("overall_summary", "")
+        if overall_summary:
+            print(f"  Generated overall summary from {len(summaries)} industry summaries")
+            return overall_summary
+    except Exception as e:
+        print(f"  Warning: Failed to generate overall summary: {e}")
+    
+    return None
+
+
 def convert_persona_to_template(persona: dict[str, Any]) -> dict[str, Any]:
     """
     Convert persona object from input format to persona_template format.
@@ -333,6 +442,55 @@ def convert_persona_to_template(persona: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def assign_variables_to_members(variables: list[dict[str, Any]], sample_size: int) -> list[dict[str, str]]:
+    """
+    Assign variable values to each member based on percentage breakdowns.
+    
+    Args:
+        variables: List of variable dicts with variableName and breakdown percentages
+        sample_size: Total number of members to generate
+    
+    Returns:
+        List of dicts, one per member, with assigned variable values
+    """
+    if not variables or sample_size <= 0:
+        return [{} for _ in range(sample_size)]
+    
+    # Initialize assignments for each member
+    assignments = [{} for _ in range(sample_size)]
+    
+    for var in variables:
+        var_name = var.get("variableName", "")
+        breakdown = var.get("breakdown", {})
+        
+        if not var_name or not breakdown:
+            continue
+        
+        # Calculate total to normalize percentages
+        total = sum(breakdown.values())
+        if total <= 0:
+            continue
+        
+        # Build list of (value, count) based on percentages
+        slot_index = 0
+        for value, percentage in breakdown.items():
+            # Calculate count from percentage
+            count = round((percentage / total) * sample_size)
+            # Assign this value to 'count' members
+            for _ in range(count):
+                if slot_index < sample_size:
+                    assignments[slot_index][var_name] = value
+                    slot_index += 1
+        
+        # Fill any remaining slots with the last value (handles rounding)
+        last_value = list(breakdown.keys())[-1] if breakdown else ""
+        while slot_index < sample_size:
+            assignments[slot_index][var_name] = last_value
+            slot_index += 1
+    
+    return assignments
+
+
 def convert_audience_to_members(
     audience_data: dict[str, Any], audience_index: int
 ) -> list[dict[str, Any]]:
@@ -340,7 +498,7 @@ def convert_audience_to_members(
     Convert audience data to member format expected by generation functions.
 
     Args:
-        audience_data: Audience dictionary with persona, screenerQuestions, and sampleSize
+        audience_data: Audience dictionary with persona, screenerQuestions, sampleSize, and variables
         audience_index: Index of this audience in the input
 
     Returns:
@@ -348,8 +506,13 @@ def convert_audience_to_members(
     """
     persona = audience_data.get("persona", {})
     persona_template = convert_persona_to_template(persona)
-    screener_questions = audience_data.get("screenerQuestions", [])
+    # Support both selectedQuestions and screenerQuestions
+    selected_questions = audience_data.get("selectedQuestions", []) or audience_data.get("screenerQuestions", [])
     sample_size = audience_data.get("sampleSize", 1)
+    variables = audience_data.get("variables", [])
+    
+    # Get variable assignments for each member
+    variable_assignments = assign_variables_to_members(variables, sample_size)
 
     members = []
     for idx in range(sample_size):
@@ -357,7 +520,8 @@ def convert_audience_to_members(
             "member_id": f"AUD{audience_index}_{idx + 1:04d}",
             "audience_index": audience_index,
             "persona_template": persona_template,
-            "screener_responses": screener_questions,
+            "screener_responses": selected_questions,
+            "assigned_variables": variable_assignments[idx],
         }
         members.append(member)
 

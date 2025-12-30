@@ -46,6 +46,7 @@ try:
     from generate_audience_characteristics import (
         _create_azure_client,
         generate_audience_characteristics,
+        generate_overall_summary_from_sample_data,
     )
 except Exception as e:
     raise ImportError(
@@ -995,22 +996,57 @@ def process_audience_generation_background(
             logger.error(f"Task {task_id}: No audiences found in input data")
             return
 
-        # Get reference distribution data if provided
+        # Get reference distribution data if provided (legacy approach)
         reference_distribution = input_data.get("reference_distribution", {})
         role_summaries = reference_distribution.get("role_summaries", [])
+
+        # NEW: Check for sample_data_url - if provided, use LLM Call 1 to generate overall summary
+        sample_data_url = input_data.get("sample_data_url")
+        overall_summary_from_sample_data: str | None = None
+
+        if sample_data_url:
+            logger.info(f"Task {task_id}: Fetching sample data from {sample_data_url}")
+            try:
+                # Parse blob URL and download using Azure Blob SDK (like json_file_url)
+                sample_container, sample_blob_name = parse_blob_url(sample_data_url)
+                sample_blob_client = blob_service.get_blob_client(
+                    container=sample_container, blob=sample_blob_name
+                )
+                sample_data_content = sample_blob_client.download_blob().readall().decode("utf-8")
+                sample_data = json.loads(sample_data_content)
+                
+                logger.info(f"Task {task_id}: Generating overall summary from sample data (LLM Call 1)")
+                
+                async def generate_summary():
+                    return await generate_overall_summary_from_sample_data(client, sample_data)
+                
+                overall_summary_from_sample_data = asyncio.run(generate_summary())
+                
+                if overall_summary_from_sample_data:
+                    logger.info(f"Task {task_id}: Overall summary generated successfully")
+                else:
+                    logger.warning(f"Task {task_id}: Failed to generate overall summary from sample data")
+            except Exception as e:
+                logger.warning(f"Task {task_id}: Failed to fetch sample data: {e}")
 
         # Run generation
         normalized_audiences = [
             {
                 "persona": aud.get("persona", {}),
-                "screenerQuestions": aud.get("screenerQuestions", []),
+                "selectedQuestions": aud.get("selectedQuestions", []) or aud.get("screenerQuestions", []),
                 "sampleSize": aud.get("sampleSize", 1),
+                "variables": aud.get("variables", []),
             }
             for aud in audiences
         ]
 
         def get_reference_summary_for_audience(aud: dict) -> str | None:
-            """Get matching reference summary based on persona type/role."""
+            """Get reference summary - prioritize overall summary from sample data."""
+            # If we have overall summary from sample_data_url, use it for all audiences
+            if overall_summary_from_sample_data:
+                return overall_summary_from_sample_data
+            
+            # Fallback to legacy role-based matching
             persona = aud.get("persona", {})
             persona_type = persona.get("personaType", "")
             for role_summary in role_summaries:
