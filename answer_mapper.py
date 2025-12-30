@@ -540,6 +540,10 @@ def create_excel_from_responses(
     print(f"Loading persona responses from: {persona_responses_path}")
     persona_responses = load_json_file(persona_responses_path)
     
+    # Handle new format with results and summary
+    if isinstance(persona_responses, dict) and "results" in persona_responses:
+        persona_responses = persona_responses["results"]
+    
     if not isinstance(persona_responses, list):
         raise ValueError("persona_responses must be a list")
     

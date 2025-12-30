@@ -650,6 +650,13 @@ def answer_questions_for_persona_with_memory(
         if resp.get("skipped"):
             answer_entry["skipped"] = True
             answer_entry["skip_reason"] = resp.get("skip_reason", "Condition not met")
+        # Always include conditions and instructions for traceability
+        q_conditions = q.get("conditions", {})
+        q_instructions = q.get("instructions", [])
+        if q_conditions:
+            answer_entry["conditions"] = q_conditions
+        if q_instructions:
+            answer_entry["instructions"] = q_instructions
         answers_list.append(answer_entry)
 
     return {

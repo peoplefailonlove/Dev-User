@@ -73,6 +73,12 @@ try:
 except Exception as e:
     raise ImportError(f"Failed to import answer_distribution.py: {e}")  # Vaibhav changed
 
+# Vaibhav changed - import prompt_context_excel module for Excel processing
+try:
+    from prompt_context_excel import get_prompt_context_excel_json, process_excel_survey_data  # Vaibhav changed
+except Exception as e:
+    raise ImportError(f"Failed to import from prompt_context_excel.py: {e}")  # Vaibhav changed
+
 # Load .env
 load_dotenv()
 
@@ -120,7 +126,8 @@ AUDIENCE_OUTPUT_CONTAINER = "generated-synthetic-audience"
 SURVEY_RESULTS_CONTAINER = "survey-answer"
 FINAL_ANS_JSON_CONTAINER = "final-ans-json"
 FINAL_ANS_EXCEL_CONTAINER = "final-ans-excel"
-FINAL_ANS_DIST_JSON_CONTAINER = "final-ans-dist-json"   # Vaibhav changed
+FINAL_ANS_DIST_JSON_CONTAINER = "final-ans-dist-json"  
+SAMPLE_EXCEL_JSON_CONTAINER = "sample-excel-json"   # Vaibhav changed
 
 UPDATE_PERSONAS_API_URL = os.getenv(
     "UPDATE_PERSONAS_API_URL",
@@ -135,6 +142,11 @@ UPDATE_ANSWER_JSON_EXCEL_API_URL = os.getenv(
     "UPDATE_ANSWER_JSON_EXCEL_API_URL",
     "https://sample-agument-middleware-dev.azurewebsites.net/sample-enrichment/api/projects/update-excel-file-url",
 )
+
+UPDATE_SAMPLE_EXCEL_API_URL = os.getenv(
+    "UPDATE_SAMPLE_EXCEL_API_URL",
+    "https://sample-agument-middleware-dev.azurewebsites.net/sample-enrichment/api/projects/update-sample-data-blob-url",
+) # Vaibhav changed
 
 # ============== Request/Response Models ==============
 
@@ -204,6 +216,23 @@ class RunSurveyResponse(BaseModel):
     total_questions: int
     processing_time_seconds: float
     task_id: str | None = None  # Echoed back for correlation
+
+
+# Vaibhav changed - Sample Excel Test request/response models
+class SampleExcelTestRequest(BaseModel):
+    """Request body for sample Excel test endpoint."""
+
+    sample_data_url: str  # Vaibhav changed - Full blob URL to the Excel file (backend sends as sample_data_url)
+    projectId: int | None = None  # Vaibhav changed - Optional project ID for API callback (backend sends as projectId)
+    output_blob_prefix: str = "sample_excel_json"  # Prefix for output JSON file
+
+
+class SampleExcelTestResponse(BaseModel):
+    """Response body for sample Excel test endpoint."""
+
+    projectId: int | None  # Vaibhav changed - Project ID from request
+    sampleDataBlobUrl: str  # Vaibhav changed - SAS URL for the generated JSON (backend expects sampleDataBlobUrl)
+    status: str  # Vaibhav changed - Status should be "COMPLETED" on success
 
 
 # Helper: parse container + blob name from full blob URL
@@ -737,6 +766,332 @@ def simulate_survey(req: RunSurveyRequest) -> RunSurveyResponse:
             logger.info("Temporary folder for survey_run cleaned up")
 
 
+# ============== Sample Data Extraction Endpoint ==============
+# Vaibhav changed - New endpoint for processing Excel files and generating JSON
+
+
+@app.post("/sample-data-extraction", response_model=SampleExcelTestResponse, tags=["Sample Excel"])
+@app.post("/sample-data-extraction/", include_in_schema=False)
+def sample_data_extraction(req: SampleExcelTestRequest) -> SampleExcelTestResponse:
+    """
+    Process an Excel file from blob storage, convert it to JSON using prompt_context_excel,
+    upload the JSON to sample-excel-json container, and optionally call the update API.
+    
+    This endpoint:
+    1. Downloads the Excel file from the provided blob URL
+    2. Processes it using prompt_context_excel to generate structured JSON
+    3. Uploads the JSON to the sample-excel-json container
+    4. Generates a SAS URL for the JSON
+    5. Optionally calls UPDATE_SAMPLE_EXCEL_API_URL if projectId is provided
+    
+    Args:
+        req: SampleExcelTestRequest containing sample_data_url, optional projectId, and output_blob_prefix
+    
+    Returns:
+        SampleExcelTestResponse with status, blob URLs, and processing time
+    """
+    logger.info(
+        f"[SAMPLE-DATA-EXTRACTION] Starting processing - sample_data_url={req.sample_data_url}, "
+        f"projectId={req.projectId}, output_blob_prefix={req.output_blob_prefix}"
+    )
+
+    start_time = time.time()
+    logger.info(f"[SAMPLE-DATA-EXTRACTION] Processing started at {datetime.utcnow().isoformat()}")
+
+    # Vaibhav changed - Get Azure storage connection string
+    logger.info("[SAMPLE-DATA-EXTRACTION] Step 1/7: Validating Azure storage connection string")
+    conn_str = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
+    if not conn_str:
+        logger.error("[SAMPLE-DATA-EXTRACTION] AZURE_STORAGE_CONNECTION_STRING not set")
+        raise HTTPException(
+            status_code=500,
+            detail="AZURE_STORAGE_CONNECTION_STRING not set",
+        )
+    logger.info("[SAMPLE-DATA-EXTRACTION] Azure storage connection string validated")
+
+    # Vaibhav changed - Parse account info for SAS token generation
+    logger.info("[SAMPLE-DATA-EXTRACTION] Step 2/7: Parsing account info for SAS token generation")
+    account_name, account_key = parse_account_from_connection_string(conn_str)
+    if not account_name or not account_key:
+        logger.error(
+            "[SAMPLE-DATA-EXTRACTION] AccountName or AccountKey missing in AZURE_STORAGE_CONNECTION_STRING. "
+            "SAS URL generation requires a connection string with AccountKey."
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="AccountName or AccountKey missing in AZURE_STORAGE_CONNECTION_STRING (cannot generate SAS).",
+        )
+    logger.info(f"[SAMPLE-DATA-EXTRACTION] Account info parsed successfully - AccountName: {account_name}")
+
+    # Vaibhav changed - Create BlobServiceClient
+    logger.info("[SAMPLE-DATA-EXTRACTION] Step 3/7: Creating BlobServiceClient")
+    try:
+        blob_service = BlobServiceClient.from_connection_string(conn_str)
+        logger.info("[SAMPLE-DATA-EXTRACTION] BlobServiceClient created successfully")
+    except Exception as e:
+        logger.exception("[SAMPLE-DATA-EXTRACTION] Failed to create BlobServiceClient")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to create BlobServiceClient: {e}",
+        )
+
+    # Vaibhav changed - Parse input Excel blob URL
+    logger.info("[SAMPLE-DATA-EXTRACTION] Step 4/7: Parsing input Excel blob URL")
+    try:
+        excel_container, excel_blob_name = parse_blob_url(req.sample_data_url)  # Vaibhav changed - Use sample_data_url
+        logger.info(f"[SAMPLE-DATA-EXTRACTION] Parsed Excel - container={excel_container}, blob={excel_blob_name}")
+    except Exception as e:
+        logger.error(f"[SAMPLE-DATA-EXTRACTION] Failed to parse Excel blob URL: {e}")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid Excel blob URL: {e}",
+        )
+
+    tmp_dir = tempfile.mkdtemp(prefix="sample_data_extraction_")
+    logger.info(f"[SAMPLE-DATA-EXTRACTION] Created temporary directory: {tmp_dir}")
+    try:
+        # Vaibhav changed - Download Excel file from blob storage
+        logger.info("[SAMPLE-DATA-EXTRACTION] Step 5/7: Downloading Excel file from blob storage")
+        excel_local_path = os.path.join(tmp_dir, "input_excel.xlsx")
+        try:
+            excel_blob_client = blob_service.get_blob_client(
+                container=excel_container,
+                blob=excel_blob_name,
+            )
+            logger.info(f"[SAMPLE-DATA-EXTRACTION] Downloading Excel blob from container '{excel_container}' to {excel_local_path}")
+            download_start = time.time()
+            excel_data = excel_blob_client.download_blob().readall()
+            excel_size_mb = len(excel_data) / (1024 * 1024)
+            with open(excel_local_path, "wb") as f:
+                f.write(excel_data)
+            download_time = time.time() - download_start
+            file_size = os.path.getsize(excel_local_path)
+            logger.info(
+                f"[SAMPLE-DATA-EXTRACTION] Excel download complete - "
+                f"Size: {excel_size_mb:.2f} MB ({file_size:,} bytes), "
+                f"Download time: {download_time:.2f}s"
+            )
+        except Exception as e:
+            logger.exception("[SAMPLE-DATA-EXTRACTION] Failed to download Excel blob")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to download Excel blob: {e}",
+            )
+
+        # Vaibhav changed - Process Excel file using prompt_context_excel
+        logger.info("[SAMPLE-DATA-EXTRACTION] Step 6/7: Processing Excel file with prompt_context_excel")
+        try:
+            logger.info(f"[SAMPLE-DATA-EXTRACTION] Starting Excel processing - file: {excel_local_path}")
+            # Use process_excel_survey_data - pass directory as base_path and filename as file_path
+            excel_dir = os.path.dirname(excel_local_path)
+            excel_filename = os.path.basename(excel_local_path)
+            processing_start = time.time()
+            json_data = process_excel_survey_data(
+                file_path=excel_filename,
+                base_path=excel_dir  # Vaibhav changed - Pass directory as base_path
+            )
+            processing_time = time.time() - processing_start
+            
+            if not json_data:
+                logger.error("[SAMPLE-DATA-EXTRACTION] Excel processing returned no data")
+                raise RuntimeError("Excel processing returned no data")
+            
+            # Log processing statistics
+            total_records = len(json_data.get('data', [])) if isinstance(json_data, dict) else 0
+            stats = json_data.get('statistics', {})
+            role_count = len(stats.get('role', {})) if stats else 0
+            industry_count = len(stats.get('industry', {})) if stats else 0
+            
+            logger.info(
+                f"[SAMPLE-DATA-EXTRACTION] Excel processing completed - "
+                f"Processing time: {processing_time:.2f}s, "
+                f"Total role-industry pairs: {total_records}, "
+                f"Unique roles: {role_count}, "
+                f"Unique industries: {industry_count}"
+            )
+        except Exception as e:
+            logger.exception("[SAMPLE-DATA-EXTRACTION] Excel processing failed")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Excel processing failed: {e}",
+            )
+
+        # Vaibhav changed - Save JSON to local file
+        logger.info("[SAMPLE-DATA-EXTRACTION] Saving processed JSON to local file")
+        output_blob_name = generate_output_blob_name(req.output_blob_prefix)
+        local_json_path = os.path.join(tmp_dir, output_blob_name)
+        logger.info(f"[SAMPLE-DATA-EXTRACTION] Output blob name: {output_blob_name}")
+        
+        try:
+            save_start = time.time()
+            with open(local_json_path, "w", encoding="utf-8") as f:
+                json.dump(json_data, f, indent=2, ensure_ascii=False)
+            save_time = time.time() - save_start
+            json_size = os.path.getsize(local_json_path)
+            json_size_mb = json_size / (1024 * 1024)
+            logger.info(
+                f"[SAMPLE-DATA-EXTRACTION] JSON saved locally - "
+                f"Path: {local_json_path}, "
+                f"Size: {json_size_mb:.2f} MB ({json_size:,} bytes), "
+                f"Save time: {save_time:.2f}s"
+            )
+        except Exception as e:
+            logger.exception("[SAMPLE-DATA-EXTRACTION] Failed to save JSON locally")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to save JSON locally: {e}",
+            )
+
+        # Vaibhav changed - Ensure sample-excel-json container exists
+        logger.info(f"[SAMPLE-DATA-EXTRACTION] Ensuring container '{SAMPLE_EXCEL_JSON_CONTAINER}' exists")
+        try:
+            container_client = blob_service.get_container_client(
+                SAMPLE_EXCEL_JSON_CONTAINER
+            )
+            try:
+                container_client.get_container_properties()
+                logger.info(f"[SAMPLE-DATA-EXTRACTION] Container '{SAMPLE_EXCEL_JSON_CONTAINER}' already exists")
+            except Exception:
+                container_client.create_container()
+                logger.info(f"[SAMPLE-DATA-EXTRACTION] Created new container '{SAMPLE_EXCEL_JSON_CONTAINER}'")
+        except Exception as e:
+            logger.exception(f"[SAMPLE-DATA-EXTRACTION] Failed to ensure container '{SAMPLE_EXCEL_JSON_CONTAINER}' exists")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to ensure container exists: {e}",
+            )
+
+        # Vaibhav changed - Upload JSON to sample-excel-json container
+        logger.info("[SAMPLE-DATA-EXTRACTION] Step 7/7: Uploading JSON to blob storage")
+        try:
+            json_blob_client = blob_service.get_blob_client(
+                container=SAMPLE_EXCEL_JSON_CONTAINER,
+                blob=output_blob_name,
+            )
+            logger.info(
+                f"[SAMPLE-DATA-EXTRACTION] Uploading JSON to container='{SAMPLE_EXCEL_JSON_CONTAINER}', "
+                f"blob='{output_blob_name}'"
+            )
+            upload_start = time.time()
+            with open(local_json_path, "rb") as f:
+                json_blob_client.upload_blob(
+                    f,
+                    overwrite=True,
+                    content_settings=ContentSettings(content_type="application/json"),
+                )
+            upload_time = time.time() - upload_start
+            logger.info(
+                f"[SAMPLE-DATA-EXTRACTION] JSON upload complete - "
+                f"Upload time: {upload_time:.2f}s, "
+                f"Blob URL: {json_blob_client.url}"
+            )
+        except Exception as e:
+            logger.exception("[SAMPLE-DATA-EXTRACTION] Failed to upload JSON to blob")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to upload JSON to blob: {e}",
+            )
+
+        # Vaibhav changed - Generate SAS URL for the JSON blob
+        logger.info("[SAMPLE-DATA-EXTRACTION] Generating SAS URL for JSON blob")
+        try:
+            sas_start = time.time()
+            sas_token = generate_blob_sas(
+                account_name=account_name,
+                container_name=SAMPLE_EXCEL_JSON_CONTAINER,
+                blob_name=output_blob_name,
+                account_key=account_key,
+                permission=BlobSasPermissions(read=True),
+                expiry=datetime.utcnow() + timedelta(days=365),  # 1 year validity
+            )
+
+            if not sas_token:
+                logger.error("[SAMPLE-DATA-EXTRACTION] generate_blob_sas returned empty token")
+                raise RuntimeError("generate_blob_sas returned empty token")
+
+            json_sas_url = f"{json_blob_client.url}?{sas_token}"
+            sas_time = time.time() - sas_start
+            logger.info(
+                f"[SAMPLE-DATA-EXTRACTION] SAS URL generated successfully - "
+                f"Generation time: {sas_time:.2f}s, "
+                f"Expiry: 365 days from now"
+            )
+        except Exception as e:
+            logger.exception("[SAMPLE-DATA-EXTRACTION] Failed to generate SAS URL")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to generate SAS URL: {e}",
+            )
+
+        # Vaibhav changed - Call update-sample-data-blob-url API if projectId is provided
+        api_callback_status = None
+        if req.projectId is not None:  # Vaibhav changed - Use projectId instead of project_id
+            logger.info(
+                f"[SAMPLE-DATA-EXTRACTION] Calling update-sample-data-blob-url API for projectId={req.projectId}"
+            )
+            api_start = time.time()
+            api_success = call_update_sample_excel_api(
+                project_id=req.projectId,  # Vaibhav changed - Use projectId
+                sample_data_blob_url=json_sas_url,
+                status_text="COMPLETED",
+            )
+            api_time = time.time() - api_start
+            api_callback_status = "success" if api_success else "failed"
+            logger.info(
+                f"[SAMPLE-DATA-EXTRACTION] API callback completed - "
+                f"Status: {api_callback_status}, "
+                f"API call time: {api_time:.2f}s"
+            )
+        else:
+            logger.info("[SAMPLE-DATA-EXTRACTION] No projectId provided, skipping API callback")  # Vaibhav changed
+
+        processing_seconds = time.time() - start_time
+        
+        logger.info(
+            f"[SAMPLE-DATA-EXTRACTION] Processing completed successfully - "
+            f"Total processing time: {processing_seconds:.2f}s, "
+            f"Output JSON blob: {output_blob_name}, "
+            f"API callback status: {api_callback_status or 'N/A'}"
+        )
+
+        # Vaibhav changed - Return response in backend's expected format
+        return SampleExcelTestResponse(
+            projectId=req.projectId,  # Vaibhav changed - Echo projectId from request
+            sampleDataBlobUrl=json_sas_url,  # Vaibhav changed - Use sampleDataBlobUrl naming
+            status="COMPLETED",  # Vaibhav changed - Use "COMPLETED" status (uppercase) as per backend requirement
+        )
+
+    except HTTPException:
+        # Re-raise HTTP exceptions as-is
+        processing_seconds = time.time() - start_time
+        logger.error(
+            f"[SAMPLE-DATA-EXTRACTION] Processing failed with HTTPException - "
+            f"Total time before failure: {processing_seconds:.2f}s"
+        )
+        raise
+    except Exception as e:
+        processing_seconds = time.time() - start_time
+        logger.exception(
+            f"[SAMPLE-DATA-EXTRACTION] Unexpected error during processing - "
+            f"Total time before error: {processing_seconds:.2f}s"
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Unexpected error: {e}",
+        )
+
+    finally:
+        # Vaibhav changed - Clean up temporary directory
+        if 'tmp_dir' in locals() and os.path.exists(tmp_dir):
+            cleanup_start = time.time()
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            cleanup_time = time.time() - cleanup_start
+            logger.info(
+                f"[SAMPLE-DATA-EXTRACTION] Temporary folder cleaned up - "
+                f"Path: {tmp_dir}, Cleanup time: {cleanup_time:.2f}s"
+            )
+
+
 # ============== Health Check Endpoint ==============
 
 
@@ -861,6 +1216,92 @@ def call_update_personas_api(project_id: int, sas_url: str) -> bool:
     except (ValueError, KeyError, TypeError) as e:
         logger.error(f"Invalid JSON response from update-personas API (project {project_id}): {e}")
         logger.error(f"Raw response: {response.text if 'response' in locals() else 'N/A'}")
+        return False
+
+
+# Vaibhav changed - Helper function to call update-sample-data-blob-url API
+def call_update_sample_excel_api(
+    project_id: int,
+    sample_data_blob_url: str,
+    status_text: str = "COMPLETED",
+) -> bool:
+    """
+    Calls the update-sample-data-blob-url API after sample Excel JSON is generated and uploaded to blob.
+    
+    Args:
+        project_id: Project ID for the API call
+        sample_data_blob_url: SAS URL of the generated JSON blob
+        status_text: Status message for the API call
+    
+    Returns:
+        True on success, False on failure.
+    """
+    if not UPDATE_SAMPLE_EXCEL_API_URL:
+        logger.warning(
+            "UPDATE_SAMPLE_EXCEL_API_URL not configured, "
+            "skipping sample Excel update API call"
+        )
+        return False
+
+    payload = {
+        "projectId": project_id,
+        "sampleDataBlobUrl": sample_data_blob_url,  # Vaibhav changed - API expects sampleDataBlobUrl
+        "status": status_text,
+    }
+
+    try:
+        logger.info(
+            "Calling update-sample-data-blob-url API → project %s",
+            project_id,
+        )
+
+        response = requests.post(
+            UPDATE_SAMPLE_EXCEL_API_URL,
+            json=payload,
+            headers={"Content-Type": "application/json"},
+            timeout=60,
+        )
+
+        response.raise_for_status()
+        data = response.json()
+        api_status = data.get("status", "").lower()
+
+        if api_status == "success":
+            logger.info(
+                "Sample Excel URL update SUCCESS for project %s",
+                project_id,
+            )
+            return True
+        else:
+            logger.error(
+                "Sample Excel URL update FAILED for project %s | "
+                "API response: %s",
+                project_id,
+                data,
+            )
+            return False
+
+    except requests.exceptions.RequestException as e:
+        logger.error(
+            "HTTP error calling update-sample-data-blob-url API "
+            "(project %s): %s",
+            project_id,
+            e,
+        )
+        if hasattr(e, "response") and e.response is not None:
+            logger.error("Response body: %s", e.response.text)
+        return False
+    except (ValueError, KeyError, TypeError) as e:
+        logger.error(
+            "Invalid JSON response from update-sample-data-blob-url API "
+            "(project %s): %s",
+            project_id,
+            e,
+        )
+        logger.error(
+            "Raw response: %s",
+            response.text if "response" in locals() else "N/A",
+        )
         return False
 
 
@@ -996,38 +1437,36 @@ def process_audience_generation_background(
             logger.error(f"Task {task_id}: No audiences found in input data")
             return
 
-        # Get reference distribution data if provided (legacy approach)
-        reference_distribution = input_data.get("reference_distribution", {})
-        role_summaries = reference_distribution.get("role_summaries", [])
-
-        # NEW: Check for sample_data_url - if provided, use LLM Call 1 to generate overall summary
+        # Check for sample_data_url - if provided, use LLM Call 1 to generate overall summary
         sample_data_url = input_data.get("sample_data_url")
-        overall_summary_from_sample_data: str | None = None
+        sample_data: dict | None = None
+        reference_summary: str | None = None
 
         if sample_data_url:
             logger.info(f"Task {task_id}: Fetching sample data from {sample_data_url}")
             try:
-                # Parse blob URL and download using Azure Blob SDK (like json_file_url)
+                # Parse blob URL and download using Azure Blob SDK
                 sample_container, sample_blob_name = parse_blob_url(sample_data_url)
                 sample_blob_client = blob_service.get_blob_client(
                     container=sample_container, blob=sample_blob_name
                 )
                 sample_data_content = sample_blob_client.download_blob().readall().decode("utf-8")
                 sample_data = json.loads(sample_data_content)
+                logger.info(f"Task {task_id}: Sample data fetched successfully")
                 
-                logger.info(f"Task {task_id}: Generating overall summary from sample data (LLM Call 1)")
-                
-                async def generate_summary():
-                    return await generate_overall_summary_from_sample_data(client, sample_data)
-                
-                overall_summary_from_sample_data = asyncio.run(generate_summary())
-                
-                if overall_summary_from_sample_data:
-                    logger.info(f"Task {task_id}: Overall summary generated successfully")
+                # Generate overall summary from sample data (LLM Call 1)
+                logger.info(f"Task {task_id}: Generating reference summary from sample data")
+                reference_summary = asyncio.run(
+                    generate_overall_summary_from_sample_data(client, sample_data)
+                )
+                if reference_summary:
+                    logger.info(f"Task {task_id}: Reference summary generated successfully")
                 else:
-                    logger.warning(f"Task {task_id}: Failed to generate overall summary from sample data")
+                    logger.warning(f"Task {task_id}: Failed to generate reference summary")
             except Exception as e:
-                logger.warning(f"Task {task_id}: Failed to fetch sample data: {e}")
+                logger.warning(f"Task {task_id}: Failed to fetch/process sample data: {e}")
+                sample_data = None
+                reference_summary = None
 
         # Run generation
         normalized_audiences = [
@@ -1040,20 +1479,6 @@ def process_audience_generation_background(
             for aud in audiences
         ]
 
-        def get_reference_summary_for_audience(aud: dict) -> str | None:
-            """Get reference summary - prioritize overall summary from sample data."""
-            # If we have overall summary from sample_data_url, use it for all audiences
-            if overall_summary_from_sample_data:
-                return overall_summary_from_sample_data
-            
-            # Fallback to legacy role-based matching
-            persona = aud.get("persona", {})
-            persona_type = persona.get("personaType", "")
-            for role_summary in role_summaries:
-                if role_summary.get("role", "").lower() == persona_type.lower():
-                    return role_summary.get("summary")
-            return None
-
         async def run_generation():
             tasks = [
                 generate_audience_characteristics(
@@ -1062,7 +1487,7 @@ def process_audience_generation_background(
                     audience_data=aud,
                     audience_index=idx,
                     max_concurrent=req.max_concurrent,
-                    reference_summary=get_reference_summary_for_audience(audiences[idx]),
+                    reference_summary=reference_summary,
                 )
                 for idx, aud in enumerate(normalized_audiences)
             ]
