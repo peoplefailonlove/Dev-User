@@ -104,7 +104,7 @@ def load_category_patterns() -> List[tuple[str, str]]:
             category_patterns.append((pattern, display_name))
     
     return category_patterns
-
+ 
 def get_category_order() -> List[str]:
     """
     Load category order from environment variables.
