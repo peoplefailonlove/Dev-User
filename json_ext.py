@@ -18,9 +18,8 @@ import traceback
 from pathlib import Path
 from typing import Optional, List
 import re
-import time
-
 from dotenv import load_dotenv
+import time
 
 # Load environment variables (AZURE_* etc.)
 load_dotenv()
@@ -84,62 +83,49 @@ def convert_to_markdown(input_path: Path) -> str:
 #  Category extraction (regex-based)
 # ==========================
 
+def load_category_patterns() -> List[tuple[str, str]]:
+    """
+    Load category patterns from environment variables.
+    Returns a list of (regex_pattern, category_name) tuples.
+    """
+    category_patterns = []
+    
+    # Define category mapping from env vars to display names
+    category_mapping = {
+        'CATEGORY_SCREENER': 'Screener',
+        'CATEGORY_MAIN_SURVEY': 'Main Survey',
+        'CATEGORY_DEMOGRAPHICS': 'Demographics',
+        'CATEGORY_FIRMOGRAPHICS': 'Firmographics',
+        'CATEGORY_CORPOGRAPHICS': 'Corpographics',
+        'CATEGORY_FUNCTIONAL_PROFILING_NEEDS': 'Functional Profiling & Needs',
+        'CATEGORY_CONCEPT_TEST_VALUE_STORY': 'Concept Test & Value Story',
+        'CATEGORY_ADDITIONAL_PROFILING': 'Additional Profiling',
+    }
+    
+    for env_var, category_name in category_mapping.items():
+        pattern = os.getenv(env_var)
+        if pattern:
+            category_patterns.append((pattern, category_name))
+    
+    return category_patterns
+
+def get_category_order() -> List[str]:
+    """
+    Load category order from environment variables.
+    Returns a list of category names in the desired order.
+    """
+    categories_order = os.getenv('CATEGORIES_ORDER', 
+        'Screener,Main Survey,Demographics,Firmographics,Corpographics,Functional Profiling & Needs,Concept Test & Value Story,Additional Profiling,Uncategorized')
+    return [cat.strip() for cat in categories_order.split(',')]
+
 def extract_categories_from_markdown(markdown: str) -> dict:
     """
     Use regex to find section headings and map question IDs to categories.
     Returns a dict mapping category_name -> (start_line, end_line).
     """
 
-    # Define the category patterns to match (handle both & and &amp; and various heading styles)
-    category_patterns = [
-        # Screener & screening questions
-        (
-            r"^(?:#+\s*)?(?:section\s*\d+[:.\-\)]\s*)?(screener|screening questions?)\b.*$",
-            "Screener",
-        ),
-
-        # Main survey / main questionnaire
-        (
-            r"^(?:#+\s*)?(main\s+(survey|questionnaire|section)|survey\s*questions?)\b.*$",
-            "Main Survey",
-        ),
-
-        # Demographics / respondent profile / about you
-        (
-            r"^(?:#+\s*)?(demographics?|respondent profile|respondent details?|about you)\b.*$",
-            "Demographics",
-        ),
-
-        # Firmographics / company profile
-        (
-            r"^(?:#+\s*)?(firmographics?|company profile|organization profile|business profile)\b.*$",
-            "Firmographics",
-        ),
-
-        # Corpographics / corporate profile / wrap-up
-        (
-            r"^(?:#+\s*)?(corpographics?|corporate profile)\b.*$",
-            "Corpographics",
-        ),
-
-        # Functional Profiling & Needs (with & / and / &amp;)
-        (
-            r"^(?:#+\s*)?functional profiling\s*(?:&|and|&amp;)\s*needs\b.*$",
-            "Functional Profiling & Needs",
-        ),
-
-        # Concept Test & Value Story (with & / and / &amp;)
-        (
-            r"^(?:#+\s*)?concept test\s*(?:&|and|&amp;)\s*value story\b.*$",
-            "Concept Test & Value Story",
-        ),
-
-        # Additional profiling section
-        (
-            r"^(?:#+\s*)?(additional profiling|profiling questions?)\b.*$",
-            "Additional Profiling",
-        ),
-    ]
+    # Load category patterns dynamically from environment variables
+    category_patterns = load_category_patterns()
 
     # Find all section headings and their line numbers
     lines = markdown.split('\n')
@@ -483,17 +469,7 @@ def extract_document_to_json(file_path: str, output_path: Optional[str] = None):
         grouped_output.setdefault(category, []).append(q)
 
     # Ensure all expected keys exist (even if empty)
-    for key in [
-        "Screener",
-        "Main Survey",
-        "Demographics",
-        "Firmographics",
-        "Corpographics",
-        "Functional Profiling & Needs",
-        "Concept Test & Value Story",
-        "Additional Profiling",
-        "Uncategorized",
-    ]:
+    for key in get_category_order():
         grouped_output.setdefault(key, [])
 
     # 7) Write final grouped JSON to file

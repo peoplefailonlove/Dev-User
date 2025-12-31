@@ -1,3 +1,4 @@
 .env
 .venv_dev
 __pycache__
+trash
