@@ -86,26 +86,22 @@ def convert_to_markdown(input_path: Path) -> str:
 def load_category_patterns() -> List[tuple[str, str]]:
     """
     Load category patterns from environment variables.
+    Automatically detects any CATEGORY_* variables and converts them to display names.
     Returns a list of (regex_pattern, category_name) tuples.
     """
     category_patterns = []
     
-    # Define category mapping from env vars to display names
-    category_mapping = {
-        'CATEGORY_SCREENER': 'Screener',
-        'CATEGORY_MAIN_SURVEY': 'Main Survey',
-        'CATEGORY_DEMOGRAPHICS': 'Demographics',
-        'CATEGORY_FIRMOGRAPHICS': 'Firmographics',
-        'CATEGORY_CORPOGRAPHICS': 'Corpographics',
-        'CATEGORY_FUNCTIONAL_PROFILING_NEEDS': 'Functional Profiling & Needs',
-        'CATEGORY_CONCEPT_TEST_VALUE_STORY': 'Concept Test & Value Story',
-        'CATEGORY_ADDITIONAL_PROFILING': 'Additional Profiling',
-    }
-    
-    for env_var, category_name in category_mapping.items():
-        pattern = os.getenv(env_var)
-        if pattern:
-            category_patterns.append((pattern, category_name))
+    # Automatically find all CATEGORY_* environment variables
+    for env_var, pattern in os.environ.items():
+        if env_var.startswith('CATEGORY_') and pattern:
+            # Convert CATEGORY_VARIABLE_NAME to Display Name
+            # e.g., CATEGORY_MAIN_SURVEY -> Main Survey
+            # e.g., CATEGORY_FUNCTIONAL_PROFILING_NEEDS -> Functional Profiling Needs
+            display_name = env_var[9:]  # Remove 'CATEGORY_' prefix
+            # Replace underscores with spaces and handle special cases
+            display_name = display_name.replace('_', ' ')
+            
+            category_patterns.append((pattern, display_name))
     
     return category_patterns
 
