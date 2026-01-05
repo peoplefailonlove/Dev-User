@@ -2,3 +2,5 @@
 .venv_dev
 __pycache__
 trash
+data
+experiments

@@ -1,13 +1,19 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 """
-json_ext.py — async-aware chunked questionnaire extractor.
+Utility to convert a questionnaire document into JSON using Azure OpenAI.
 
-Usage:
-    python json_ext.py <input_docx_or_pdf> <output_json_path>
+- Converts PDF/DOCX/etc. to Markdown using Docling
+- Processes markdown in CHUNKS with async concurrency (4 workers default)
+- Sends chunks to Azure OpenAI via LangChain for question extraction
+- Uses regex-based section detection to assign categories (13 patterns)
+- Returns JSON in the form: { "category_name": [ questions ], ... }
 
-Environment:
+Usage (CLI):
+    python ml.py <input_path> <output_json_path>
+
+Environment Variables:
   - AZURE_OPENAI_ENDPOINT
-  - AZURE_OPENAI_API_KEY
+  - AZURE_OPENAI_API_KEY  
   - AZURE_OPENAI_DEPLOYMENT
   - OPENAI_API_VERSION (optional)
   - QNR_LLM_TIMEOUT (optional seconds, default 180)
@@ -20,18 +26,22 @@ Environment:
 
 import os
 import sys
-import re
 import json
+import traceback
+import re
 import time
 import asyncio
-import traceback
+import logging
 from pathlib import Path
-from typing import List, Dict, Tuple, Optional, Any
+from typing import Optional, List, Dict, Tuple, Any
 from concurrent.futures import ThreadPoolExecutor
 
 from dotenv import load_dotenv
 
+# Load environment variables (AZURE_* etc.)
 load_dotenv()
+
+# Recommended fix for HF symlink issues on Windows
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS", "1")
 
 # Docling conversion (must be installed)
@@ -41,14 +51,12 @@ except Exception as e:
     raise RuntimeError("docling.document_converter import failed. Install docling in this environment.") from e
 
 # LangChain / Azure client wrapper
-# Accept either async or sync client; we'll detect at runtime.
 try:
     from langchain_openai import AzureChatOpenAI
 except Exception as e:
     raise RuntimeError("langchain_openai.AzureChatOpenAI import failed. Ensure LLM client wrapper is available.") from e
 
 # Logging
-import logging
 logger = logging.getLogger("Question Json Extraction")
 if not logger.handlers:
     h = logging.StreamHandler()
@@ -56,9 +64,9 @@ if not logger.handlers:
     logger.addHandler(h)
 logger.setLevel(logging.INFO)
 
-# -----------------------
+# ==========================
 # Category detection patterns — expanded for both questionnaire styles
-# -----------------------
+# ==========================
 CATEGORY_PATTERNS: List[Tuple[re.Pattern, str]] = [
     # Original patterns (kept for QNR_Bill style)
     (re.compile(r"^(?:#+\s*)?(?:section\s*\d+[:.\-\)]\s*)?(screener|screening questions?)\b.*$", re.IGNORECASE), "Screener"),
@@ -78,9 +86,9 @@ CATEGORY_PATTERNS: List[Tuple[re.Pattern, str]] = [
     (re.compile(r"^(?:#+\s*)?profiling\b.*$", re.IGNORECASE), "Profiling"),
 ]
 
-# -----------------------
+# ==========================
 # Markdown splitting (anchors)
-# -----------------------
+# ==========================
 QUESTION_ANCHOR_REGEX = re.compile(
     r"""
     ^\s*                     # Start of line, optional whitespace
@@ -129,9 +137,9 @@ def split_markdown_into_blocks(md: str) -> List[str]:
     
     return blocks
 
-# -----------------------
+# ==========================
 # Option-only block heuristic
-# -----------------------
+# ==========================
 def looks_like_options_only(block: str) -> bool:
     lines = [ln.strip() for ln in block.splitlines() if ln.strip()]
     if not lines:
@@ -150,9 +158,9 @@ def looks_like_options_only(block: str) -> bool:
         return True
     return False
 
-# -----------------------
+# ==========================
 # LLM schema instructions (block-level)
-# -----------------------
+# ==========================
 SCHEMA_INSTRUCTIONS_BLOCK = """
 You are given a single BLOCK of questionnaire markdown. Extract ONLY the question(s) present in this block.
 
@@ -179,9 +187,9 @@ Rules (must follow):
 - Return ONLY valid JSON (no explanation text, no markdown, no backticks).
 """
 
-# -----------------------
+# ==========================
 # JSON parsing helper (robust)
-# -----------------------
+# ==========================
 def parse_json_from_text(raw: str) -> List[Any]:
     raw = (raw or "").strip()
     if not raw:
@@ -210,8 +218,8 @@ def parse_json_from_text(raw: str) -> List[Any]:
         key = f"__URLPLACEHOLDER{i}__"
         url_placeholders[key] = url
         fixed = fixed.replace(url, key)
-    fixed = fixed.replace("‘", "'").replace("’", "'").replace("“", '"').replace("”", '"')
-    fixed = re.sub(r"\'([^\']*?)\'", r'"\1"', fixed)
+    fixed = fixed.replace("'", "'").replace("'", "'").replace('"', '"').replace('"', '"')
+    fixed = re.sub(r"'([^']*?)'", r'"\1"', fixed)
     fixed = re.sub(r",\s*(\]|\})", r"\1", fixed)
     for k, v in url_placeholders.items():
         fixed = fixed.replace(k, v)
@@ -230,7 +238,7 @@ def parse_json_from_text(raw: str) -> List[Any]:
             parsed_objs.append(parsed_o)
         except Exception:
             try:
-                o_fixed = re.sub(r"\'([^\']*?)\'", r'"\1"', o)
+                o_fixed = re.sub(r"'([^']*?)'", r'"\1"', o)
                 o_fixed = re.sub(r",\s*(\}|\])", r"\1", o_fixed)
                 parsed_o = json.loads(o_fixed)
                 parsed_objs.append(parsed_o)
@@ -240,9 +248,9 @@ def parse_json_from_text(raw: str) -> List[Any]:
         return parsed_objs
     return []
 
-# -----------------------
-# Create Azure client (sync or async)
-# -----------------------
+# ==========================
+# Azure OpenAI client setup (LangChain version)
+# ==========================
 def make_azure_client() -> AzureChatOpenAI:
     endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT")
     api_key = os.environ.get("AZURE_OPENAI_API_KEY")
@@ -265,9 +273,9 @@ def make_azure_client() -> AzureChatOpenAI:
     logger.info("[LLM] Initialized (deployment=%s timeout=%.1fs)", deployment, timeout)
     return llm
 
-# -----------------------
-# Wrapper to call LLM either async or sync (with run_in_executor fallback)
-# -----------------------
+# ==========================
+# Async LLM calling with retries
+# ==========================
 # Threadpool used only if client is sync
 _THREADPOOL = ThreadPoolExecutor(max_workers=int(os.getenv("QNR_THREADPOOL_WORKERS", "8")))
 
@@ -304,9 +312,9 @@ async def _call_llm_with_retries_async(llm, messages: List[Tuple[str, str]], max
             await asyncio.sleep(wait)
     raise RuntimeError(f"LLM calls failed after {max_retries} attempts") from last_exc
 
-# -----------------------
+# ==========================
 # Block-level call + parsing + normalize
-# -----------------------
+# ==========================
 async def call_azure_for_block(llm, block_md: str, max_retries: int = None) -> List[dict]:
     """
     Send a single markdown block to LLM (async-aware) and return parsed list of question dicts.
@@ -345,76 +353,127 @@ async def call_azure_for_block(llm, block_md: str, max_retries: int = None) -> L
         out.append(item)
     return out
 
-# -----------------------
-# Category detection / assignment (same logic)
-# -----------------------
-def extract_categories_from_markdown(lines: List[str]) -> Dict[str, Tuple[int, int]]:
-    section_boundaries: List[Tuple[int, str]] = []
+# ==========================
+# Category extraction (regex-based) - Enhanced
+# ==========================
+def extract_categories_from_markdown(markdown: str) -> dict:
+    """
+    Use regex to find section headings and map question IDs to categories.
+    Returns a dict mapping category_name -> (start_line, end_line).
+    """
+    lines = markdown.split('\n')
+    section_boundaries: List[tuple[int, str]] = []  # (line_number, category_name)
+
     for i, line in enumerate(lines):
         raw = line.strip()
-        normalized = re.sub(r'^[#>\-\s]+', '', raw)
+
+        # --- Normalize markdown heading line ---
+        normalized = raw
+        normalized = re.sub(r'^[#>\-\s]+', '', normalized)
         normalized = re.sub(r'^[*_`]+', '', normalized)
         normalized = re.sub(r'[*_`]+$', '', normalized)
-        for pattern, cat in CATEGORY_PATTERNS:
+
+        for pattern, category in CATEGORY_PATTERNS:
             if pattern.match(normalized):
-                section_boundaries.append((i, cat))
+                section_boundaries.append((i, category))
                 break
+
+    # Sort by line number
     section_boundaries.sort(key=lambda x: x[0])
-    category_map: Dict[str, Tuple[int, int]] = {}
-    for idx, (line_num, cat) in enumerate(section_boundaries):
-        start = line_num
-        end = section_boundaries[idx + 1][0] if idx + 1 < len(section_boundaries) else len(lines)
-        category_map[cat] = (start, end)
+
+    # Create a mapping of line ranges to categories
+    category_map: dict[str, tuple[int, int]] = {}
+    for idx, (line_num, category) in enumerate(section_boundaries):
+        start_line = line_num
+        end_line = section_boundaries[idx + 1][0] if idx + 1 < len(section_boundaries) else len(lines)
+        category_map[category] = (start_line, end_line)
+
     logger.info("[Category] Found %d sections: %s", len(category_map), ", ".join(category_map.keys()) if category_map else "(none)")
     return category_map
 
-def assign_categories_to_questions(questions: List[dict], lines: List[str], category_map: Dict[str, Tuple[int, int]]) -> List[dict]:
-    for q in questions:
-        qid = q.get("id","")
-        qtext = q.get("text","")
-        assigned = None
-        if qid:
-            pattern = rf"\*\*\[{re.escape(qid)}\]\*\*"
-            for i, ln in enumerate(lines):
-                if re.search(pattern, ln, re.IGNORECASE):
-                    for cat,(s,e) in category_map.items():
-                        if s <= i < e:
-                            assigned = cat
+def assign_categories_to_questions(
+    questions: list,
+    markdown: str,
+    category_map: dict
+) -> list:
+    """
+    Assign categories to questions based on their position in the markdown.
+    Questions are identified primarily by their ID appearing in the markdown
+    as **[QUESTION_ID]**, with a text-based fallback.
+    """
+    lines = markdown.split('\n')
+
+    for question in questions:
+        question_id = question.get("id", "")
+        question_text = question.get("text", "")
+
+        best_category = None
+        best_line = -1
+
+        # --- 1) Try to locate by explicit ID pattern: **[QUESTION_ID]** ---
+        if question_id:
+            pattern = rf"\*\*\[{re.escape(question_id)}\]\*\*"
+            for i, line in enumerate(lines):
+                if re.search(pattern, line, re.IGNORECASE):
+                    for category, (start_line, end_line) in category_map.items():
+                        if start_line <= i < end_line:
+                            if best_line == -1 or i < best_line:
+                                best_category = category
+                                best_line = i
                             break
-                    if assigned:
-                        break
-        if not assigned and qtext:
-            snippet = re.sub(r'[^\w\s]', ' ', qtext[:80]).strip()
-            words = [w for w in snippet.split() if len(w)>3][:5]
-            if words:
-                search_pattern = r'\b' + r'\b.*\b'.join([re.escape(w) for w in words]) + r'\b'
-                for i, ln in enumerate(lines):
-                    if re.search(search_pattern, ln, re.IGNORECASE):
-                        for cat,(s,e) in category_map.items():
-                            if s <= i < e:
-                                assigned = cat
-                                break
-                        if assigned:
-                            break
-        q["category"] = assigned if assigned else q.get("category","Uncategorized")
+
+        # --- 2) Fallback: try by question text snippet if ID-based search failed ---
+        if not best_category and question_text:
+            if len(question_text) > 20:
+                text_snippet = question_text[:80].strip()
+                text_snippet = re.sub(r'[^\w\s]', ' ', text_snippet)
+                text_snippet = ' '.join(text_snippet.split())
+
+                if len(text_snippet) > 15:
+                    words = [w for w in text_snippet.split() if len(w) > 3][:5]
+                    if words:
+                        search_pattern = r'\b' + r'\b.*\b'.join(
+                            [re.escape(w) for w in words]
+                        ) + r'\b'
+
+                        for i, line in enumerate(lines):
+                            if re.search(search_pattern, line, re.IGNORECASE):
+                                for category, (start_line, end_line) in category_map.items():
+                                    if start_line <= i < end_line:
+                                        best_category = category
+                                        best_line = i
+                                        break
+                                if best_category:
+                                    break
+
+        if best_category:
+            question["category"] = best_category
+        else:
+            # If we cannot confidently assign, mark as Uncategorized
+            question.setdefault("category", "Uncategorized")
+
     return questions
 
-# -----------------------
+# ==========================
 # Docling conversion
-# -----------------------
+# ==========================
 def convert_to_markdown(input_path: Path) -> str:
+    """
+    Use Docling to convert any supported file (PDF, DOCX, etc.) into markdown text.
+    """
     logger.info("[Docling] Converting document to markdown: %s", input_path)
-    t0 = time.time()
-    conv = DocumentConverter()
-    res = conv.convert(str(input_path))
-    md_doc = res.document.export_to_markdown()
+    converter = DocumentConverter()
+    conv_result = converter.convert(str(input_path))
+
+    md_doc = conv_result.document.export_to_markdown()
     md = md_doc if isinstance(md_doc, str) else str(md_doc)
-    logger.info("[Docling] Done in %.2fs | chars=%d", time.time() - t0, len(md))
+
+    logger.info("[Docling] Markdown length: %d characters", len(md))
     return md
 
-# -----------------------
+# ==========================
 # Async orchestration for blocks
-# -----------------------
+# ==========================
 async def _process_blocks_concurrently(llm, candidate_blocks: List[str]) -> List[dict]:
     max_workers = int(os.getenv("QNR_MAX_WORKERS", "4"))
     sem = asyncio.Semaphore(max_workers)
@@ -450,35 +509,52 @@ async def _process_blocks_concurrently(llm, candidate_blocks: List[str]) -> List
         ordered.extend(results_by_index.get(i, []))
     return ordered
 
-# -----------------------
-# Top-level pipeline
-# -----------------------
-def extract_document_to_json(file_path: str, output_path: Optional[str] = None) -> Dict[str, List[dict]]:
-    input_path = Path(file_path)
-    if not input_path.exists():
-        raise FileNotFoundError(f"Input not found: {input_path}")
+# ==========================
+# MAIN FUNCTION (importable) - Enhanced with async processing
+# ==========================
+def extract_document_to_json(file_path: str, output_path: Optional[str] = None):
+    """
+    Convert a document to structured JSON using chunked async processing.
 
-    output_path_path = Path(output_path) if output_path else input_path.with_suffix(".json")
+    Output format:
+    {
+      "Screener": [ { "id": "...", "text": "...", "type": "...", "category": "Screener", ... }, ... ],
+      "Main Survey": [ ... ],
+      "Demographics": [ ... ],
+      ...
+    }
+    """
+    input_path = Path(file_path)
+    if output_path is None:
+        output_path_path = input_path.with_suffix(".json")
+    else:
+        output_path_path = Path(output_path)
+
+    if not input_path.exists():
+        raise FileNotFoundError(f"Input file does not exist: {input_path}")
+
+    start_time = time.time()
     logger.info("Starting extraction pipeline | input=%s | output=%s | size=%s bytes", input_path, output_path_path, input_path.stat().st_size)
 
-    t0 = time.time()
-    # 1) convert to markdown
+    # 1) Convert document to markdown using Docling
     markdown = convert_to_markdown(input_path)
     lines = markdown.splitlines()
 
+    # Optional: save markdown to inspect exactly what the model sees
     if os.getenv("QNR_SAVE_MARKDOWN", "1") == "1":
         try:
-            md_debug = output_path_path.with_suffix(".md")
-            md_debug.write_text(markdown, encoding="utf-8")
-            logger.info("[Debug] Saved markdown to %s", md_debug)
+            md_debug_path = output_path_path.with_suffix(".md")
+            with md_debug_path.open("w", encoding="utf-8") as f_md:
+                f_md.write(markdown)
+            logger.info("[Debug] Saved markdown to: %s", md_debug_path)
         except Exception as e:
-            logger.warning("[Debug] Could not save markdown: %s", e)
+            logger.warning("[Debug] Could not save markdown (%s), continuing anyway.", e)
 
-    # 2) split into blocks
+    # 2) Split into blocks
     blocks = split_markdown_into_blocks(markdown)
     logger.info("[Split] Found %d blocks", len(blocks))
 
-    # 3) filter option-only blocks
+    # 3) Filter option-only blocks
     candidate_blocks = []
     for i, b in enumerate(blocks, start=1):
         if looks_like_options_only(b):
@@ -487,16 +563,16 @@ def extract_document_to_json(file_path: str, output_path: Optional[str] = None) 
         candidate_blocks.append(b)
     logger.info("[Split] %d candidate blocks after filtering", len(candidate_blocks))
 
-    # 4) optional dev limit
+    # 4) Optional dev limit
     max_blocks = int(os.getenv("QNR_MAX_BLOCKS", str(len(candidate_blocks))))
     if max_blocks < len(candidate_blocks):
         logger.info("[Dev] Limiting blocks to first %d of %d (QNR_MAX_BLOCKS)", max_blocks, len(candidate_blocks))
         candidate_blocks = candidate_blocks[:max_blocks]
 
-    # 5) init LLM client
+    # 5) Init LLM client
     llm = make_azure_client()
 
-    # 6) run async orchestration (use asyncio.run)
+    # 6) Run async orchestration (use asyncio.run)
     logger.info("[Async] Launching async block processing (concurrency=%s)", os.getenv("QNR_MAX_WORKERS", "4"))
     try:
         ordered_questions = asyncio.run(_process_blocks_concurrently(llm, candidate_blocks))
@@ -506,34 +582,34 @@ def extract_document_to_json(file_path: str, output_path: Optional[str] = None) 
 
     logger.info("[Questions] Raw extracted across blocks (ordered): %d", len(ordered_questions))
 
-    # 7) dedupe by id (keep first)
-    seen = set()
-    unique = []
+    # 7) Deduplicate by id (keep first)
+    seen_ids = set()
+    unique_questions = []
     for q in ordered_questions:
         qid = q.get("id")
         if not qid:
             qid = re.sub(r"\W+", "_", (q.get("text","") or "")[:40]).upper().strip("_") or f"Q_{int(time.time()*1000)}"
             q["id"] = qid
-        if qid not in seen:
-            unique.append(q)
-            seen.add(qid)
-    logger.info("[Questions] Unique after dedupe: %d (removed=%d)", len(unique), len(ordered_questions) - len(unique))
+        if qid not in seen_ids:
+            unique_questions.append(q)
+            seen_ids.add(qid)
 
-    # 8) categories & assignment
-    category_map = extract_categories_from_markdown(lines)
-    questions_with_cats = assign_categories_to_questions(unique, lines, category_map)
+    logger.info("[Questions] Unique after dedupe: %d (removed=%d)", len(unique_questions), len(ordered_questions) - len(unique_questions))
+
+    # 8) Extract categories using regex and assign to questions
+    category_map = extract_categories_from_markdown(markdown)
+    questions_with_cats = assign_categories_to_questions(unique_questions, markdown, category_map)
     categorized_count = sum(1 for q in questions_with_cats if q.get("category") != "Uncategorized")
     logger.info("[Category] Categorized: %d / %d", categorized_count, len(questions_with_cats))
 
-    # 9) group
-    grouped: Dict[str, List[dict]] = {}
+    # 9) Group questions directly by category for final JSON
+    grouped_output = {}
     for q in questions_with_cats:
-        cat = q.get("category") or "Uncategorized"
-        grouped.setdefault(cat, []).append(q)
+        category = q.get("category") or "Uncategorized"
+        grouped_output.setdefault(category, []).append(q)
 
-    # ensure keys
-    # ensure keys — add new ones
-    for k in [
+    # Ensure all expected keys exist (even if empty) - expanded set
+    for key in [
         "Screener",
         "Main Survey",
         "Demographics",
@@ -547,30 +623,38 @@ def extract_document_to_json(file_path: str, output_path: Optional[str] = None) 
         "BILL Relationship",
         "Buyer Journey & Switching",
         "Profiling",
-        "Uncategorized"
+        "Uncategorized",
     ]:
-        grouped.setdefault(k, [])
+        grouped_output.setdefault(key, [])
 
-    # 10) write output
-    output_path_path.parent.mkdir(parents=True, exist_ok=True)
+    # 10) Write final grouped JSON to file
+    if output_path_path.parent and not output_path_path.parent.exists():
+        output_path_path.parent.mkdir(parents=True, exist_ok=True)
+
     with output_path_path.open("w", encoding="utf-8") as f:
-        json.dump(grouped, f, ensure_ascii=False, indent=2)
+        json.dump(grouped_output, f, ensure_ascii=False, indent=2)
 
-    logger.info("Done. Extracted %d questions -> %s | runtime=%.2fs", len(questions_with_cats), output_path_path, time.time() - t0)
-    return grouped
+    logger.info("✅ Done! Extracted %d questions into segments → %s | runtime=%.2fs", len(questions_with_cats), output_path_path, time.time() - start_time)
 
-# -----------------------
-# CLI
-# -----------------------
-def main():
+    return grouped_output
+
+# ==========================
+# CLI ENTRY POINT
+# ==========================
+def main() -> None:
     if len(sys.argv) != 3:
-        print("Usage: python json_ext.py <input_docx_or_pdf> <output_json_path>")
+        print("Usage: python ml.py <input_path> <output_json_path>")
         sys.exit(1)
-    in_path, out_path = sys.argv[1], sys.argv[2]
+
+    input_path, output_path = sys.argv[1], sys.argv[2]
+
     try:
-        extract_document_to_json(in_path, out_path)
+        extract_document_to_json(input_path, output_path)
     except Exception as e:
         logger.error("❌ Error: %s", e)
+        print("\n❌ An error occurred:")
+        print(str(e))
+        print("\nFull traceback:")
         traceback.print_exc()
         sys.exit(1)
 
