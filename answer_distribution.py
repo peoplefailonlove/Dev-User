@@ -249,9 +249,9 @@ def calculate_distribution(dataset: List[Dict[str, Any]], questions: List[Dict[s
             }
 
         elif col_type == 'single_select':
-            # Convert dict-type values into JSON strings to make them hashable
+            # Convert dict-type and list-type values into JSON strings to make them hashable
             safe_values = [
-                json.dumps(v, sort_keys=True) if isinstance(v, dict) else v
+                json.dumps(v, sort_keys=True) if isinstance(v, (dict, list)) else v
                 for v in values
             ]
 
@@ -378,9 +378,9 @@ def calculate_distribution(dataset: List[Dict[str, Any]], questions: List[Dict[s
             empty_count = sum(1 for v in values if v == '' or v is None)
             non_empty_count = total_rows - empty_count
             non_empty_values = [v for v in values if v != '' and v is not None]
-            # Vaibhav changed: Convert dict-type values into JSON strings to make them hashable
+            # Vaibhav changed: Convert dict-type and list-type values into JSON strings to make them hashable
             safe_non_empty_values = [
-                json.dumps(v, sort_keys=True) if isinstance(v, dict) else v
+                json.dumps(v, sort_keys=True) if isinstance(v, (dict, list)) else v
                 for v in non_empty_values
             ]
             value_counts = Counter(safe_non_empty_values)
@@ -458,8 +458,8 @@ def _determine_column_type(values: List[Any]) -> str:
     if not non_none_values:
         return 'empty'
 
-    # Vaibhav changed: Check for dict values and treat them as text (will be converted to JSON strings)
-    if any(isinstance(v, dict) for v in non_none_values):
+    # Vaibhav changed: Check for dict values and list values and treat them as text (will be converted to JSON strings)
+    if any(isinstance(v, (dict, list)) for v in non_none_values):
         return 'text'
 
     if all(v in [0, 1] for v in non_none_values):
