@@ -65,26 +65,45 @@ if not logger.handlers:
 logger.setLevel(logging.INFO)
 
 # ==========================
-# Category detection patterns — expanded for both questionnaire styles
+# Category detection patterns — loaded from environment
 # ==========================
-CATEGORY_PATTERNS: List[Tuple[re.Pattern, str]] = [
-    # Original patterns (kept for QNR_Bill style)
-    (re.compile(r"^(?:#+\s*)?(?:section\s*\d+[:.\-\)]\s*)?(screener|screening questions?)\b.*$", re.IGNORECASE), "Screener"),
-    (re.compile(r"^(?:#+\s*)?(main\s+(survey|questionnaire|section)|survey\s*questions?)\b.*$", re.IGNORECASE), "Main Survey"),
-    (re.compile(r"^(?:#+\s*)?(demographics?|respondent profile|respondent details?|about you)\b.*$", re.IGNORECASE), "Demographics"),
-    (re.compile(r"^(?:#+\s*)?(firmographics?|company profile|organization profile|business profile)\b.*$", re.IGNORECASE), "Firmographics"),
-    (re.compile(r"^(?:#+\s*)?(corpographics?|corporate profile)\b.*$", re.IGNORECASE), "Corpographics"),
-    (re.compile(r"^(?:#+\s*)?functional profiling\s*(?:&|and|&amp;)\s*needs\b.*$", re.IGNORECASE), "Functional Profiling & Needs"),
-    (re.compile(r"^(?:#+\s*)?concept test\s*(?:&|and|&amp;)\s*value story\b.*$", re.IGNORECASE), "Concept Test & Value Story"),
-    (re.compile(r"^(?:#+\s*)?(additional profiling|profiling questions?)\b.*$", re.IGNORECASE), "Additional Profiling"),
+def load_category_patterns() -> List[Tuple[re.Pattern, str]]:
+    """
+    Load category patterns from environment variables.
+    Format: SEGMENT_PATTERN_1=Name|Regex Pattern
+    Automatically detects all numbered pattern variables.
+    """
+    patterns: List[Tuple[re.Pattern, str]] = []
+    
+    # Find all SEGMENT_PATTERN_* environment variables
+    pattern_keys = [key for key in os.environ.keys() if key.startswith('SEGMENT_PATTERN_')]
+    
+    # Sort by number to maintain order
+    pattern_keys.sort(key=lambda x: int(x.split('_')[-1]))
+    
+    for env_key in pattern_keys:
+        pattern_line = os.getenv(env_key, "")
+        
+        if '|' in pattern_line:
+            name, pattern_str = pattern_line.split('|', 1)
+            try:
+                pattern = re.compile(pattern_str, re.IGNORECASE)
+                patterns.append((pattern, name.strip()))
+                logger.info("[Category] Loaded pattern: %s", name.strip())
+            except re.error as e:
+                logger.error("[Category] Invalid regex pattern for '%s': %s", name.strip(), e)
+        else:
+            logger.warning("[Category] Invalid pattern format for %s (missing '|')", env_key)
+    
+    if not patterns:
+        logger.warning("[Category] No segment patterns found in environment")
+    else:
+        logger.info("[Category] Successfully loaded %d segment patterns", len(patterns))
+    
+    return patterns
 
-    # NEW: Patterns for QNR_SPP_Network style
-    (re.compile(r"^(?:#+\s*)?automation\s*(?:&|and|&amp;)?\s*FBO\b.*$", re.IGNORECASE), "Automation & FBO"),
-    (re.compile(r"^(?:#+\s*)?AR\s*(?:&|and|&amp;)?\s*(payments?\s*)?profile\b.*$", re.IGNORECASE), "AR & Payments Profile"),
-    (re.compile(r"^(?:#+\s*)?BILL\s+relationship\b.*$", re.IGNORECASE), "BILL Relationship"),
-    (re.compile(r"^(?:#+\s*)?(buyer journey|switching).*$", re.IGNORECASE), "Buyer Journey & Switching"),
-    (re.compile(r"^(?:#+\s*)?profiling\b.*$", re.IGNORECASE), "Profiling"),
-]
+# Load patterns at module level
+CATEGORY_PATTERNS = load_category_patterns()
 
 # ==========================
 # Markdown splitting (anchors)
@@ -608,23 +627,11 @@ def extract_document_to_json(file_path: str, output_path: Optional[str] = None):
         category = q.get("category") or "Uncategorized"
         grouped_output.setdefault(category, []).append(q)
 
-    # Ensure all expected keys exist (even if empty) - expanded set
-    for key in [
-        "Screener",
-        "Main Survey",
-        "Demographics",
-        "Firmographics",
-        "Corpographics",
-        "Functional Profiling & Needs",
-        "Concept Test & Value Story",
-        "Additional Profiling",
-        "Automation & FBO",
-        "AR & Payments Profile",
-        "BILL Relationship",
-        "Buyer Journey & Switching",
-        "Profiling",
-        "Uncategorized",
-    ]:
+    # Ensure all expected keys exist (even if empty) - loaded from environment
+    segment_names = [name for _, name in CATEGORY_PATTERNS]
+    segment_names.append("Uncategorized")  # Always include Uncategorized
+    
+    for key in segment_names:
         grouped_output.setdefault(key, [])
 
     # 10) Write final grouped JSON to file
